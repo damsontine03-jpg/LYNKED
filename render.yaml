@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: homework-tracker-api
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: DATABASE_URL
+        sync: false
+      - key: BREVO_API_KEY
+        sync: false
+      - key: BREVO_SENDER_EMAIL
+        sync: false
+      - key: BREVO_SENDER_NAME
+        value: Homework Tracker
+      - key: FRONTEND_URL
+        sync: false
+      - key: OTP_SECRET
+        generateValue: true
