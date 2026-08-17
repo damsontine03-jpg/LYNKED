@@ -37,7 +37,9 @@ export function Reminders({
             <span>
               {role === 'student'
                 ? 'You are all caught up. No homework due soon.'
-                : 'No upcoming deadlines for the class right now.'}
+                : role === 'parent'
+                  ? 'No upcoming deadlines for your child right now.'
+                  : 'No upcoming deadlines for the class right now.'}
             </span>
           </div>
         ) : (

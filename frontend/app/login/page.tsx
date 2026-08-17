@@ -14,7 +14,7 @@ function LoginGate() {
   }, [currentUser, router, sessionReady])
 
   if (!sessionReady || currentUser) {
-    return <div className="min-h-screen bg-primary" />
+    return <div className="auth-shell bg-primary" />
   }
 
   return <AuthScreen />
@@ -22,7 +22,7 @@ function LoginGate() {
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-primary" />}>
+    <Suspense fallback={<div className="auth-shell bg-primary" />}>
       <LoginGate />
     </Suspense>
   )

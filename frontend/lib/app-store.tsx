@@ -17,10 +17,13 @@ import {
   ASSISTANT_CONV_ID,
   ASSISTANT_ID,
   assistantReply,
+  assistantGreeting,
   loadAssistantMessages,
   saveAssistantMessages,
   clearAssistantMessages,
+  type AssistantContext,
 } from './assistant'
+import { Toaster } from '@/components/ui/toaster'
 import type {
   Announcement,
   AnnouncementPriority,
@@ -44,6 +47,7 @@ import type {
 } from './types'
 import { isOverdue } from './date-utils'
 import { api, getStoredToken, storeToken } from './api'
+import { showToast } from './toast'
 
 export interface ConversationSummary extends Conversation {
   lastMessage?: ChatMessage
@@ -54,6 +58,7 @@ interface BootstrapPayload {
   user: User
   students: User[]
   teachers?: User[]
+  parents?: User[]
   classes?: SchoolClass[]
   subjects?: SubjectRecord[]
   homework: Homework[]
@@ -80,6 +85,7 @@ interface AppStore {
 
   students: User[]
   teachers: User[]
+  parents: User[]
   classes: SchoolClass[]
   subjects: SubjectRecord[]
   addUser: (input: {
@@ -89,9 +95,11 @@ interface AppStore {
     className?: string
     classNames?: string[]
     subjects?: string[]
-  }) => Promise<{ emailSent: boolean }>
+    childPublicId?: string
+  }) => Promise<{ emailSent: boolean; publicId?: string }>
   addClass: (input: Omit<SchoolClass, 'id' | 'student_count'> & { student_count?: number }) => void
   addSubject: (input: Omit<SubjectRecord, 'id'>) => void
+  deleteSubject: (id: string) => void
 
   assignments: Assignment[]
   visibleHomework: Homework[]
@@ -108,6 +116,13 @@ interface AppStore {
   gradeSubmission: (id: string, score: number, feedback: string) => void
 
   visibleReportCards: ReportCard[]
+  createReportCard: (input: {
+    student_id: string
+    term: string
+    results: ReportCard['results']
+    teacher_remark: string
+    published?: boolean
+  }) => void
   updateReportCard: (id: string, patch: Partial<ReportCard>) => void
   toggleReportCardPublished: (id: string) => void
 
@@ -147,6 +162,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [sessionReady, setSessionReady] = useState(false)
   const [students, setStudents] = useState<User[]>([])
   const [teachers, setTeachers] = useState<User[]>([])
+  const [parents, setParents] = useState<User[]>([])
   const [classes, setClasses] = useState<SchoolClass[]>([])
   const [subjects, setSubjects] = useState<SubjectRecord[]>([])
   const [homeworkRows, setHomeworkRows] = useState<Homework[]>([])
@@ -157,6 +173,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [assistantMessages, setAssistantMessages] = useState<ChatMessage[]>([])
   const assistantTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const assistantContextRef = useRef<AssistantContext | null>(null)
   const [liveConversations, setLiveConversations] = useState<Conversation[]>([])
   const [lastRead, setLastRead] = useState<Record<string, string>>({})
   const [events, setEvents] = useState<SchoolEvent[]>([])
@@ -180,6 +197,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCurrentUser(nextUser)
     setStudents(nextStudents)
     setTeachers(nextTeachers)
+    setParents(data.parents ?? [])
     setClasses(data.classes ?? [])
     setSubjects(data.subjects ?? [])
     setHomeworkRows(data.homework ?? [])
@@ -206,6 +224,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return data
     },
     [applyBootstrap],
+  )
+
+  const toastMutation = useCallback(
+    (promise: Promise<unknown>, success: string, failure: string) => {
+      void promise
+        .then(() => showToast(success))
+        .catch(() => showToast(failure, 'error'))
+    },
+    [],
   )
 
   const setSession = useCallback(
@@ -263,50 +290,82 @@ export function AppProvider({ children }: { children: ReactNode }) {
       className?: string
       classNames?: string[]
       subjects?: string[]
+      childPublicId?: string
     }) => {
-      const data = (await runMutation('/api/users', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: input.name,
-          email: input.email,
-          role: input.role,
-          className: input.className,
-          classNames: input.classNames,
-          subjects: input.subjects,
-        }),
-      })) as BootstrapPayload & { emailSent?: boolean }
-      return { emailSent: Boolean(data?.emailSent) }
+      try {
+        const data = (await runMutation('/api/users', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: input.name,
+            email: input.email,
+            role: input.role,
+            className: input.className,
+            classNames: input.classNames,
+            subjects: input.subjects,
+            childPublicId: input.childPublicId,
+          }),
+        })) as BootstrapPayload & { emailSent?: boolean; publicId?: string }
+        const label =
+          input.role === 'student'
+            ? 'Student'
+            : input.role === 'teacher'
+              ? 'Teacher'
+              : input.role === 'parent'
+                ? 'Parent'
+                : 'Account'
+        showToast(`${label} created`)
+        return { emailSent: Boolean(data?.emailSent), publicId: data?.publicId }
+      } catch (error) {
+        showToast('Could not create this account', 'error')
+        throw error
+      }
     },
     [runMutation],
   )
 
   const addClass = useCallback(
     (input: Omit<SchoolClass, 'id' | 'student_count'> & { student_count?: number }) => {
-      void runMutation('/api/classes', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: input.name,
-          teacher_id: input.teacher_id,
+      toastMutation(
+        runMutation('/api/classes', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: input.name,
+            teacher_id: input.teacher_id,
+          }),
         }),
-      }).catch(() => {})
+        'Class created',
+        'Could not create the class',
+      )
     },
-    [runMutation],
+    [runMutation, toastMutation],
   )
 
   const addSubject = useCallback(
     (input: Omit<SubjectRecord, 'id'>) => {
-      void runMutation('/api/subjects', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: input.name,
-          code: input.code,
-          className: input.className,
-          teacher_id: input.teacher_id,
+      toastMutation(
+        runMutation('/api/subjects', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: input.name,
+            code: input.code,
+            className: input.className,
+            teacher_id: input.teacher_id,
+          }),
         }),
-      }).catch(() => {})
+        'Subject created',
+        'Could not create the subject',
+      )
     },
-    [runMutation],
+    [runMutation, toastMutation],
   )
+
+  const deleteSubject = useCallback((id: string) => {
+    toastMutation(
+      runMutation(`/api/subjects/${id}`, { method: 'DELETE' }),
+      'Subject deleted',
+      'Could not delete the subject',
+    )
+  }, [runMutation, toastMutation])
 
   const visibleAssignments = useMemo(() => {
     const published = assignments.filter((a) => a.status === 'published')
@@ -335,8 +394,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const rows: Homework[] = []
     for (const a of visibleAssignments.filter((x) => x.status === 'published')) {
       const subs = submissions.filter((s) => s.assignment_id === a.id)
-      if (currentUser.role === 'student') {
-        const mine = subs.find((s) => s.student_id === currentUser.id)
+      if (currentUser.role === 'student' || currentUser.role === 'parent') {
+        const sid =
+          currentUser.role === 'parent' ? currentUser.childId : currentUser.id
+        const mine = subs.find((s) => s.student_id === sid)
         if (mine) {
           const done =
             mine.status === 'submitted' ||
@@ -381,41 +442,57 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const createAssignment = useCallback(
     (input: AssignmentInput) => {
-      void runMutation('/api/assignments', {
-        method: 'POST',
-        body: JSON.stringify(input),
-      }).catch(() => {})
+      toastMutation(
+        runMutation('/api/assignments', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        }),
+        'Assignment created',
+        'Could not create the assignment',
+      )
     },
-    [runMutation],
+    [runMutation, toastMutation],
   )
 
   const updateAssignment = useCallback((id: string, patch: Partial<AssignmentInput>) => {
     void runMutation(`/api/assignments/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
-    }).catch(() => {})
+    })
+      .then(() => showToast('Assignment updated'))
+      .catch(() => showToast('Could not update the assignment', 'error'))
   }, [runMutation])
 
   const deleteAssignment = useCallback((id: string) => {
-    void runMutation(`/api/assignments/${id}`, { method: 'DELETE' }).catch(() => {})
-  }, [runMutation])
+    const homeworkId = homeworkRows.some((row) => row.id === id) ? id : null
+    const path = homeworkId ? `/api/homework/${homeworkId}` : `/api/assignments/${id}`
+    toastMutation(
+      runMutation(path, { method: 'DELETE' }),
+      'Assignment deleted',
+      'Could not delete the assignment',
+    )
+  }, [homeworkRows, runMutation, toastMutation])
 
   const createHomework = useCallback(
     (input: HomeworkInput) => {
       if (!currentUser) return
-      void runMutation('/api/homework', {
-        method: 'POST',
-        body: JSON.stringify({
-          ...input,
-          className: currentUser.className,
-          student_id:
-            currentUser.role === 'student'
-              ? currentUser.id
-              : input.student_id || 'all',
+      toastMutation(
+        runMutation('/api/homework', {
+          method: 'POST',
+          body: JSON.stringify({
+            ...input,
+            className: currentUser.className,
+            student_id:
+              currentUser.role === 'student'
+                ? currentUser.id
+                : input.student_id || 'all',
+          }),
         }),
-      }).catch(() => {})
+        'Homework created',
+        'Could not create the homework',
+      )
     },
-    [currentUser, runMutation],
+    [currentUser, runMutation, toastMutation],
   )
 
   const homeworkIdFor = useCallback(
@@ -459,13 +536,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     (id: string) => {
       const homeworkId = homeworkIdFor(id)
       if (homeworkId) {
-        void runMutation(`/api/homework/${homeworkId}`, { method: 'DELETE' }).catch(() => {})
+        toastMutation(
+          runMutation(`/api/homework/${homeworkId}`, { method: 'DELETE' }),
+          'Homework deleted',
+          'Could not delete the homework',
+        )
         return
       }
       const sub = submissions.find((s) => s.id === id)
       if (sub) deleteAssignment(sub.assignment_id)
     },
-    [deleteAssignment, homeworkIdFor, runMutation, submissions],
+    [deleteAssignment, homeworkIdFor, runMutation, submissions, toastMutation],
   )
 
   const toggleStatus = useCallback(
@@ -504,7 +585,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const submitAssignment = useCallback(
     (assignmentId: string, fileName: string, comment?: string) => {
-      if (!currentUser) return
+      if (!currentUser || currentUser.role === 'parent') return
       if (homeworkRows.some((h) => h.id === assignmentId)) {
         void runMutation(`/api/homework/${assignmentId}/toggle-status`, {
           method: 'POST',
@@ -580,13 +661,43 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const visibleReportCards = useMemo(() => {
     if (!currentUser) return []
     if (currentUser.role === 'teacher' || currentUser.role === 'admin') return reportCards
-    return reportCards.filter((c) => c.student_id === currentUser.id && c.published)
+    return reportCards.filter(
+      (c) =>
+        c.published &&
+        c.student_id ===
+          (currentUser.role === 'parent' ? currentUser.childId : currentUser.id),
+    )
   }, [reportCards, currentUser])
+
+  const createReportCard = useCallback(
+    (input: {
+      student_id: string
+      term: string
+      results: ReportCard['results']
+      teacher_remark: string
+      published?: boolean
+    }) => {
+      toastMutation(
+        runMutation('/api/report-cards', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        }),
+        input.published ? 'Report card published' : 'Report card created',
+        'Could not save the report card',
+      )
+    },
+    [runMutation, toastMutation],
+  )
 
   const updateReportCard = useCallback((id: string, patch: Partial<ReportCard>) => {
     void runMutation(`/api/report-cards/${id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ teacher_remark: patch.teacher_remark }),
+      body: JSON.stringify({
+        term: patch.term,
+        results: patch.results,
+        teacher_remark: patch.teacher_remark,
+        published: patch.published,
+      }),
     }).catch(() => {})
   }, [runMutation])
 
@@ -626,12 +737,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const sendAnnouncement = useCallback(
     (title: string, body: string, _priority: AnnouncementPriority = 'normal') => {
-      void runMutation('/api/announcements', {
-        method: 'POST',
-        body: JSON.stringify({ title, body }),
-      }).catch(() => {})
+      toastMutation(
+        runMutation('/api/announcements', {
+          method: 'POST',
+          body: JSON.stringify({ title, body }),
+        }),
+        'Announcement created',
+        'Could not create the announcement',
+      )
     },
-    [runMutation],
+    [runMutation, toastMutation],
   )
 
   const baseConversations = useMemo(() => {
@@ -675,6 +790,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [allMessages],
   )
 
+  assistantContextRef.current = currentUser
+    ? {
+        user: currentUser,
+        assignments: visibleAssignments,
+        submissions,
+        homework: visibleHomework,
+        exams:
+          currentUser.role === 'admin'
+            ? exams
+            : exams.filter(
+                (e) =>
+                  e.published &&
+                  ((currentUser.role !== 'student' && currentUser.role !== 'parent') ||
+                    e.className === currentUser.className),
+              ),
+        events: currentUser.role === 'admin' ? events : events.filter((e) => e.published),
+        notifications: myNotifications,
+        reportCards: visibleReportCards,
+        students,
+        teachers,
+        parents,
+        classes,
+        subjects,
+        announcements: announcements.filter((a) => a.published || currentUser.role === 'admin'),
+      }
+    : null
+
   const sendMessage = useCallback(
     (convId: string, body: string) => {
       const text = body.trim()
@@ -695,13 +837,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
           saveAssistantMessages(currentUser.id, next)
           return next
         })
+        const ctx = assistantContextRef.current
         const reply: ChatMessage = {
           id: `m-${crypto.randomUUID()}`,
           conversation_id: ASSISTANT_CONV_ID,
           sender_id: ASSISTANT_ID,
           sender_role: 'teacher',
           sender_name: 'LynkED Assistant',
-          body: assistantReply(text, currentUser.name),
+          body: ctx ? assistantReply(text, ctx) : assistantGreeting(currentUser.name),
           created_at: new Date(Date.now() + 400).toISOString(),
         }
         if (assistantTimer.current) window.clearTimeout(assistantTimer.current)
@@ -745,60 +888,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const upsertEvent = useCallback(
     (event: Omit<SchoolEvent, 'id'> & { id?: string }) => {
-      setEvents((prev) => {
-        if (event.id) {
-          return prev.map((e) => (e.id === event.id ? { ...e, ...event, id: e.id } : e))
-        }
-        return [{ ...event, id: `ev-${crypto.randomUUID()}` }, ...prev]
-      })
-      if (event.published) {
-        setNotifications((prev) => [
-          {
-            id: `n-${crypto.randomUUID()}`,
-            user_id: 'all',
-            type: 'event',
-            title: `Event: ${event.title}`,
-            body: `${event.title} on ${event.date} at ${event.location}.`,
-            created_at: new Date().toISOString(),
-            read: false,
-          },
-          ...prev,
-        ])
-      }
+      toastMutation(
+        runMutation('/api/events', {
+          method: 'POST',
+          body: JSON.stringify(event),
+        }),
+        event.id ? 'Event saved' : 'Event created',
+        'Could not save the event',
+      )
     },
-    [],
+    [runMutation, toastMutation],
   )
 
   const deleteEvent = useCallback((id: string) => {
-    setEvents((prev) => prev.filter((e) => e.id !== id))
-  }, [])
+    toastMutation(
+      runMutation(`/api/events/${id}`, { method: 'DELETE' }),
+      'Event deleted',
+      'Could not delete the event',
+    )
+  }, [runMutation, toastMutation])
 
   const upsertExam = useCallback((exam: Omit<Exam, 'id'> & { id?: string }) => {
-    setExams((prev) => {
-      if (exam.id) {
-        return prev.map((e) => (e.id === exam.id ? { ...e, ...exam, id: e.id } : e))
-      }
-      return [{ ...exam, id: `ex-${crypto.randomUUID()}` }, ...prev]
-    })
-    if (exam.published) {
-      setNotifications((prev) => [
-        {
-          id: `n-${crypto.randomUUID()}`,
-          user_id: 'all',
-          type: 'exam',
-          title: `${exam.subject} exam scheduled`,
-          body: `${exam.title} on ${exam.date} in ${exam.room}.`,
-          created_at: new Date().toISOString(),
-          read: false,
-        },
-        ...prev,
-      ])
-    }
-  }, [])
+    toastMutation(
+      runMutation('/api/exams', {
+        method: 'POST',
+        body: JSON.stringify(exam),
+      }),
+      exam.id ? 'TimeTable item saved' : 'TimeTable item created',
+      'Could not save the timetable item',
+    )
+  }, [runMutation, toastMutation])
 
   const deleteExam = useCallback((id: string) => {
-    setExams((prev) => prev.filter((e) => e.id !== id))
-  }, [])
+    toastMutation(
+      runMutation(`/api/exams/${id}`, { method: 'DELETE' }),
+      'TimeTable item deleted',
+      'Could not delete the timetable item',
+    )
+  }, [runMutation, toastMutation])
 
   const recordGameScore = useCallback((gameId: string, score: number) => {
     void runMutation(`/api/games/${gameId}/score`, {
@@ -822,11 +949,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       logout,
       students,
       teachers,
+      parents,
       classes,
       subjects,
       addUser,
       addClass,
       addSubject,
+      deleteSubject,
       assignments: visibleAssignments,
       visibleHomework,
       createHomework,
@@ -840,6 +969,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       submitAssignment,
       gradeSubmission,
       visibleReportCards,
+      createReportCard,
       updateReportCard,
       toggleReportCardPublished,
       notifications: myNotifications,
@@ -862,7 +992,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           : exams.filter(
               (e) =>
                 e.published &&
-                (currentUser?.role !== 'student' || e.className === currentUser.className),
+                ((currentUser?.role !== 'student' && currentUser?.role !== 'parent') ||
+                  e.className === currentUser.className),
             ),
       upsertExam,
       deleteExam,
@@ -882,11 +1013,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       logout,
       students,
       teachers,
+      parents,
       classes,
       subjects,
       addUser,
       addClass,
       addSubject,
+      deleteSubject,
       visibleAssignments,
       visibleHomework,
       createHomework,
@@ -900,6 +1033,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       submitAssignment,
       gradeSubmission,
       visibleReportCards,
+      createReportCard,
       updateReportCard,
       toggleReportCardPublished,
       myNotifications,
@@ -927,7 +1061,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   return (
-    <AppStoreContext.Provider value={value}>{children}</AppStoreContext.Provider>
+    <AppStoreContext.Provider value={value}>
+      {children}
+      <Toaster />
+    </AppStoreContext.Provider>
   )
 }
 

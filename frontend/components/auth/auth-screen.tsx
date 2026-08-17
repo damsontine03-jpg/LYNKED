@@ -7,9 +7,10 @@ import { BrandLogo } from '@/components/brand-logo'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ClassSelect } from '@/components/ui/class-select'
 import { Select } from '@/components/ui/select'
 import { MultiPick } from '@/components/ui/multi-pick'
-import { CLASS_OPTIONS, SUBJECT_OPTIONS } from '@/lib/ui-helpers'
+import { CLASS_GROUPS, CLASS_OPTIONS, DEFAULT_CLASS, SUBJECT_OPTIONS } from '@/lib/ui-helpers'
 import { api } from '@/lib/api'
 import { useAppStore } from '@/lib/app-store'
 import type { Role, User } from '@/lib/types'
@@ -27,9 +28,10 @@ export function AuthScreen() {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<Role>('student')
-  const [className, setClassName] = useState('SSS 2')
-  const [classNames, setClassNames] = useState<string[]>(['SSS 2'])
+  const [className, setClassName] = useState(DEFAULT_CLASS)
+  const [classNames, setClassNames] = useState<string[]>([DEFAULT_CLASS])
   const [subjects, setSubjects] = useState<string[]>([])
+  const [childPublicId, setChildPublicId] = useState('')
   const [code, setCode] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -63,8 +65,8 @@ export function AuthScreen() {
       setError('Choose at least one class.')
       return
     }
-    if (mode === 'signup' && role === 'teacher' && subjects.length === 0) {
-      setError('Choose at least one subject.')
+    if (mode === 'signup' && role === 'parent' && !childPublicId.trim()) {
+      setError('Enter your child\'s student ID.')
       return
     }
     setBusy(true)
@@ -82,6 +84,7 @@ export function AuthScreen() {
             className: role === 'teacher' ? classNames[0] : className,
             classNames: role === 'teacher' ? classNames : [className],
             subjects: role === 'teacher' ? subjects : [],
+            childPublicId: role === 'parent' ? childPublicId.trim() : undefined,
           }),
         },
       )
@@ -121,18 +124,23 @@ export function AuthScreen() {
   }
 
   return (
-    <main className="flex min-h-screen w-full items-center justify-center bg-primary px-4 py-8 sm:py-10">
-      <div className="hero-art w-full max-w-md rounded-3xl bg-white px-5 py-8 shadow-[0_16px_50px_rgba(0,0,0,0.18)] sm:px-10 sm:py-10">
-        <div className="mb-8 flex flex-col items-center gap-4">
-          <BrandLogo size="xl" priority />
-          <h1 className="text-center text-xl font-bold uppercase tracking-wide sm:text-2xl">
+    <main className="auth-shell overflow-x-hidden overflow-y-auto bg-primary">
+      <div className="flex min-h-full w-full items-center justify-center">
+        <div className="hero-art auth-card my-auto min-w-0 rounded-2xl bg-white px-4 py-5 shadow-[0_16px_50px_rgba(0,0,0,0.18)] sm:rounded-3xl sm:px-8 sm:py-8 md:px-10 md:py-10">
+        <div className="mb-4 flex flex-col items-center gap-2 sm:mb-6 sm:gap-3 md:mb-8 md:gap-4">
+          <BrandLogo
+            size="xl"
+            priority
+            className="auth-logo h-[clamp(3.5rem,14svh,7.5rem)] sm:h-[clamp(4.5rem,16svh,9rem)]"
+          />
+          <h1 className="text-center text-lg font-bold uppercase tracking-wide sm:text-xl md:text-2xl">
             {step === 'code'
               ? 'Check your email'
               : mode === 'login'
                 ? 'Welcome back'
                 : 'Create account'}
           </h1>
-          <p className="text-center text-sm text-muted-foreground">
+          <p className="max-w-prose px-1 text-center text-xs text-muted-foreground sm:text-sm">
             {step === 'code'
               ? `Enter the 6 digit code sent to ${email}`
               : 'Sign in or sign up with an email code. No password needed.'}
@@ -145,7 +153,7 @@ export function AuthScreen() {
               e.preventDefault()
               void sendCode()
             }}
-            className="flex flex-col gap-5"
+            className="flex min-w-0 flex-col gap-3 sm:gap-4 md:gap-5"
           >
             {mode === 'signup' ? (
               <>
@@ -161,18 +169,23 @@ export function AuthScreen() {
                   <Select value={role} onChange={(e) => setRole(e.target.value as Role)}>
                     <option value="student">Student</option>
                     <option value="teacher">Teacher</option>
+                    <option value="parent">Parent</option>
                     <option value="admin">School admin</option>
                   </Select>
                 </Field>
                 {role === 'student' ? (
                   <Field label="Class">
-                    <Select value={className} onChange={(e) => setClassName(e.target.value)}>
-                      {CLASS_OPTIONS.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </Select>
+                    <ClassSelect value={className} onChange={(e) => setClassName(e.target.value)} />
+                  </Field>
+                ) : null}
+                {role === 'parent' ? (
+                  <Field label="Child student ID">
+                    <Input
+                      value={childPublicId}
+                      onChange={(e) => setChildPublicId(e.target.value.toUpperCase())}
+                      placeholder="STU-A7K2M9"
+                      autoComplete="off"
+                    />
                   </Field>
                 ) : null}
                 {role === 'teacher' ? (
@@ -180,6 +193,7 @@ export function AuthScreen() {
                     <MultiPick
                       label="Classes"
                       options={CLASS_OPTIONS}
+                      groups={CLASS_GROUPS}
                       selected={classNames}
                       onChange={setClassNames}
                       allowCustom
@@ -211,13 +225,13 @@ export function AuthScreen() {
 
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
-            <Button type="submit" size="lg" className="mt-1 w-full uppercase" disabled={busy}>
+            <Button type="submit" size="lg" className="mt-1 min-h-11 w-full uppercase" disabled={busy}>
               {busy ? 'Sending…' : 'Send code'}
             </Button>
             {mode === 'login' ? (
               <button
                 type="button"
-                className="text-sm text-primary"
+                className="min-h-11 text-sm text-primary"
                 disabled={busy}
                 onClick={() => {
                   if (!email.trim()) {
@@ -233,7 +247,7 @@ export function AuthScreen() {
             ) : null}
           </form>
         ) : (
-          <form onSubmit={verifyCode} className="flex flex-col gap-5">
+          <form onSubmit={verifyCode} className="flex min-w-0 flex-col gap-3 sm:gap-4 md:gap-5">
             <Field label="Email code">
               <Input
                 value={code}
@@ -241,7 +255,7 @@ export function AuthScreen() {
                 placeholder="000000"
                 inputMode="numeric"
                 autoComplete="one-time-code"
-                className="text-center text-2xl tracking-[0.4em]"
+                className="text-center text-xl tracking-[0.25em] sm:text-2xl sm:tracking-[0.4em]"
               />
             </Field>
 
@@ -253,13 +267,13 @@ export function AuthScreen() {
 
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
-            <Button type="submit" size="lg" className="w-full uppercase" disabled={busy}>
+            <Button type="submit" size="lg" className="min-h-11 w-full uppercase" disabled={busy}>
               {busy ? 'Checking…' : mode === 'login' ? 'Log In' : 'Create account'}
             </Button>
 
             <button
               type="button"
-              className="text-sm text-primary disabled:text-muted-foreground"
+              className="min-h-11 text-sm text-primary disabled:text-muted-foreground"
               disabled={busy || cooldown > 0}
               onClick={() => void sendCode()}
             >
@@ -267,7 +281,7 @@ export function AuthScreen() {
             </button>
             <button
               type="button"
-              className="text-sm text-muted-foreground"
+              className="min-h-11 text-sm text-muted-foreground"
               onClick={() => {
                 setStep('details')
                 setCode('')
@@ -279,13 +293,13 @@ export function AuthScreen() {
           </form>
         )}
 
-        <p className="mt-6 text-center text-sm text-muted-foreground">
+        <p className="mt-4 text-center text-sm text-muted-foreground sm:mt-6">
           {mode === 'login' ? (
             <>
               Don&apos;t have an account?{' '}
               <button
                 type="button"
-                className="font-semibold text-primary"
+                className="inline-flex min-h-11 items-center font-semibold text-primary"
                 onClick={() => switchMode('signup')}
               >
                 Sign Up
@@ -296,7 +310,7 @@ export function AuthScreen() {
               Already have an account?{' '}
               <button
                 type="button"
-                className="font-semibold text-primary"
+                className="inline-flex min-h-11 items-center font-semibold text-primary"
                 onClick={() => switchMode('login')}
               >
                 Log in
@@ -305,11 +319,12 @@ export function AuthScreen() {
           )}
         </p>
 
-        <p className="mt-8 text-center text-xs text-muted-foreground">
-          <Link href="/" className="text-primary">
+        <p className="mt-5 text-center text-xs text-muted-foreground sm:mt-8">
+          <Link href="/" className="inline-flex min-h-11 items-center text-primary">
             Back home
           </Link>
         </p>
+      </div>
       </div>
     </main>
   )

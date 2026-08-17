@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
+import { ClassSelect } from '@/components/ui/class-select'
 import { Select } from '@/components/ui/select'
 import { CLASS_OPTIONS, SUBJECT_OPTIONS } from '@/lib/ui-helpers'
 import { todayInputValue } from '@/lib/date-utils'
@@ -111,16 +112,11 @@ export function AssignmentFormDialog({
 
           {classes.length > 0 ? (
             <Field label="Class">
-              <Select
+              <ClassSelect
+                names={[...new Set([...classes, form.className].filter(Boolean))]}
                 value={form.className}
                 onChange={(e) => set('className', e.target.value)}
-              >
-                {[...new Set([...classes, form.className].filter(Boolean))].map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </Select>
+              />
             </Field>
           ) : null}
 

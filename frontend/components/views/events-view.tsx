@@ -45,9 +45,11 @@ export function EventsView({ user }: { user: User }) {
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold uppercase tracking-tight">Events</h1>
+          <h1 className="text-2xl font-bold uppercase tracking-tight">School Events</h1>
           <p className="text-sm text-muted-foreground">
-            School days, trips, and gatherings.
+            {user.role === 'admin'
+              ? 'Add school events for every class, such as trips, meetings, and term dates.'
+              : 'School days, trips, and gatherings.'}
           </p>
         </div>
         {canManage ? (

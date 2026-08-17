@@ -7,15 +7,16 @@ import { Card } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ClassSelect } from '@/components/ui/class-select'
 import { Select } from '@/components/ui/select'
 import { useAppStore } from '@/lib/app-store'
-import { CLASS_OPTIONS } from '@/lib/ui-helpers'
+import { DEFAULT_CLASS, classLevel } from '@/lib/ui-helpers'
 import type { User } from '@/lib/types'
 
 export function ClassesView({ user }: { user: User }) {
   const { classes, teachers, addClass } = useAppStore()
   const [open, setOpen] = useState(false)
-  const [name, setName] = useState('SSS 1')
+  const [name, setName] = useState(DEFAULT_CLASS)
   const [customName, setCustomName] = useState('')
   const [teacherId, setTeacherId] = useState(teachers[0]?.id ?? user.id)
 
@@ -30,9 +31,10 @@ export function ClassesView({ user }: { user: User }) {
       user.role === 'teacher'
         ? user
         : teachers.find((t) => t.id === teacherId) ?? teachers[0] ?? user
+    const className = customName.trim() || name
     addClass({
-      name: customName.trim() || name,
-      level: 'Senior Secondary',
+      name: className,
+      level: classLevel(className),
       teacher_id: teacher.id,
       teacher_name: teacher.name,
     })
@@ -47,8 +49,8 @@ export function ClassesView({ user }: { user: User }) {
           <h1 className="text-2xl font-semibold tracking-tight">Classes</h1>
           <p className="text-sm text-muted-foreground">
             {user.role === 'teacher'
-              ? 'Classes you teach. Add another class at any time.'
-              : 'Manage class groups and form tutors.'}
+              ? 'These are the year groups you teach. A class is the student group, such as Class 4 or SSS 1 Science. Assignments, the timetable, and report cards go to a class so the right students see them.'
+              : 'A class is a student group in the same year, such as Class 4 or SSS 1 Science. Assignments, the timetable, and report cards go to a class so the right students see them. The teacher listed here is the form tutor.'}
           </p>
         </div>
         <Button onClick={() => setOpen(true)}>Create class</Button>
@@ -75,13 +77,7 @@ export function ClassesView({ user }: { user: User }) {
         <form onSubmit={submit} className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="cls-name">Class</Label>
-            <Select id="cls-name" value={name} onChange={(e) => setName(e.target.value)}>
-              {CLASS_OPTIONS.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </Select>
+            <ClassSelect id="cls-name" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="cls-custom">Or type a class name</Label>
@@ -89,7 +85,7 @@ export function ClassesView({ user }: { user: User }) {
               id="cls-custom"
               value={customName}
               onChange={(e) => setCustomName(e.target.value)}
-              placeholder="SSS 2 Science"
+              placeholder="JSS 2 Science"
             />
           </div>
           {user.role === 'admin' ? (

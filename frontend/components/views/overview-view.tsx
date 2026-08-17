@@ -7,6 +7,7 @@ import {
   BookOpen,
   CalendarDays,
   ClipboardList,
+  FileText,
   Gamepad2,
   GraduationCap,
   Megaphone,
@@ -39,15 +40,23 @@ export function OverviewView({
   if (user.role === 'teacher') {
     return <TeacherDashboard user={user} onNavigate={onNavigate} />
   }
-  return <StudentDashboard user={user} onNavigate={onNavigate} />
+  return (
+    <StudentDashboard
+      user={user}
+      onNavigate={onNavigate}
+      forParent={user.role === 'parent'}
+    />
+  )
 }
 
 function StudentDashboard({
   user,
   onNavigate,
+  forParent = false,
 }: {
   user: User
   onNavigate: (view: AppView) => void
+  forParent?: boolean
 }) {
   const {
     assignments,
@@ -58,6 +67,7 @@ function StudentDashboard({
     conversations,
     announcements,
   } = useAppStore()
+  const viewerId = forParent ? user.childId || '' : user.id
 
   const mine = useMemo(
     () =>
@@ -66,10 +76,10 @@ function StudentDashboard({
         .map((a) => ({
           assignment: a,
           sub: submissions.find(
-            (s) => s.assignment_id === a.id && s.student_id === user.id,
+            (s) => s.assignment_id === a.id && s.student_id === viewerId,
           ),
         })),
-    [assignments, submissions, user.id],
+    [assignments, submissions, viewerId],
   )
 
   const dueCount = mine.filter(
@@ -97,16 +107,24 @@ function StudentDashboard({
   return (
     <div className="flex flex-col gap-6">
       <Hero
-        kicker={user.className}
+        kicker={
+          forParent
+            ? [user.childName, user.className].filter(Boolean).join(' · ')
+            : user.className
+        }
         title={greeting(user.name)}
-        body="Here is what you need to do today. Check assignments, exams, and work that is due soon."
+        body={
+          forParent
+            ? 'Follow your child\'s assignments, grades, exams, and events. You can message class teachers here.'
+            : 'Here is what you need to do today. Check assignments, exams, and work that is due soon.'
+        }
       />
 
       <div className="stagger grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Assignments due" value={dueCount} />
         <StatCard label="Pending submissions" value={pendingSubs} />
-        <StatCard label="Recent grades" value={recentGrades.length} />
-        <StatCard label="Upcoming exams" value={upcomingExams.length} />
+        <StatCard label="Assignment grades" value={recentGrades.length} />
+        <StatCard label="TimeTable" value={upcomingExams.length} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -142,16 +160,16 @@ function StudentDashboard({
 
         <div className="flex flex-col gap-4">
           <Card className="flex flex-col gap-3 p-5">
-            <h2 className="text-sm font-medium">Upcoming exams</h2>
+            <h2 className="text-sm font-medium">TimeTable</h2>
             {upcomingExams.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No exams scheduled yet.</p>
+              <p className="text-sm text-muted-foreground">Nothing on the timetable yet.</p>
             ) : (
               upcomingExams.map((ex) => (
               <div key={ex.id} className="flex justify-between gap-2 text-sm">
                 <span className="min-w-0">
                   {ex.subject}
                   <span className="block text-xs text-muted-foreground">
-                    {ex.room} · {ex.start_time}
+                    {(ex.kind || 'class') === 'exam' ? 'Exam' : 'Class'} · {ex.room} · {ex.start_time}
                   </span>
                 </span>
                 <span className="text-xs text-muted-foreground">
@@ -161,14 +179,14 @@ function StudentDashboard({
               ))
             )}
             <Button variant="secondary" size="sm" className="justify-between" onClick={() => onNavigate('exams')}>
-              Exam timetable <ArrowRight />
+              TimeTable <ArrowRight />
             </Button>
           </Card>
 
           <Card className="flex flex-col gap-3 p-5">
-            <h2 className="text-sm font-medium">Upcoming events</h2>
+            <h2 className="text-sm font-medium">School Events</h2>
             {upcomingEvents.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No upcoming events yet.</p>
+              <p className="text-sm text-muted-foreground">No school events yet.</p>
             ) : (
               upcomingEvents.map((ev) => (
               <div key={ev.id} className="text-sm">
@@ -201,9 +219,9 @@ function StudentDashboard({
           </Card>
 
           <Card className="flex flex-col gap-3 p-5">
-            <h2 className="text-sm font-medium">Recent grades</h2>
+            <h2 className="text-sm font-medium">Assignment grades</h2>
             {recentGrades.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No grades yet.</p>
+              <p className="text-sm text-muted-foreground">No assignment grades yet.</p>
             ) : (
               recentGrades.map(({ assignment, sub }) => (
                 <div key={assignment.id} className="flex justify-between text-sm">
@@ -230,11 +248,13 @@ function StudentDashboard({
         <div className="stagger grid grid-cols-2 gap-2 sm:grid-cols-4">
           {[
             { label: 'Assignments', view: 'assignments' as const, icon: BookOpen },
-            { label: 'Grades', view: 'grades' as const, icon: GraduationCap },
+            { label: 'Assignment grades', view: 'grades' as const, icon: GraduationCap },
             { label: 'Chat', view: 'chat' as const, icon: MessageCircle },
-            { label: 'Exams', view: 'exams' as const, icon: ClipboardList },
-            { label: 'Events', view: 'events' as const, icon: CalendarDays },
-            { label: 'Games', view: 'games' as const, icon: Gamepad2 },
+            { label: 'TimeTable', view: 'exams' as const, icon: ClipboardList },
+            { label: 'School Events', view: 'events' as const, icon: CalendarDays },
+            ...(forParent
+              ? [{ label: 'Report Card', view: 'reportcards' as const, icon: FileText }]
+              : [{ label: 'Games', view: 'games' as const, icon: Gamepad2 }]),
           ].map((a) => (
             <Button
               key={a.view}
@@ -314,7 +334,7 @@ function TeacherDashboard({
               <>
                 {exams.slice(0, 2).map((e) => (
                   <p key={e.id} className="text-sm">
-                    {e.subject} exam · {formatDueDate(e.date)}
+                    {e.subject} {(e.kind || 'class') === 'exam' ? 'exam' : 'class'} · {formatDueDate(e.date)}
                   </p>
                 ))}
                 {events.slice(0, 2).map((e) => (
@@ -407,8 +427,8 @@ function AdminDashboard({
         <StatCard label="Subjects" value={subjects.length} />
         <StatCard label="Active assignments" value={assignments.filter((a) => a.status === 'published').length} />
         <StatCard label="Pending submissions" value={pending} />
-        <StatCard label="Upcoming exams" value={exams.length} />
-        <StatCard label="Upcoming events" value={events.filter((e) => e.published).length} />
+        <StatCard label="TimeTable" value={exams.length} />
+        <StatCard label="School Events" value={events.filter((e) => e.published).length} />
       </div>
       <Card className="flex flex-col gap-3 p-5">
         <h2 className="text-sm font-medium">Quick actions</h2>
@@ -418,7 +438,7 @@ function AdminDashboard({
             { label: 'Add teacher', view: 'teachers' as const, icon: Users },
             { label: 'Create class', view: 'classes' as const, icon: Plus },
             { label: 'Create event', view: 'events' as const, icon: CalendarDays },
-            { label: 'Exam timetable', view: 'exams' as const, icon: ClipboardList },
+            { label: 'TimeTable', view: 'exams' as const, icon: ClipboardList },
             { label: 'Announcement', view: 'announcements' as const, icon: Megaphone },
           ].map((a) => (
             <Button key={a.label} variant="secondary" size="sm" className="justify-between" onClick={() => onNavigate(a.view)}>

@@ -21,8 +21,8 @@ const features = [
 
 export function Features() {
   return (
-    <section id="features" className="-mt-12 pb-16 sm:-mt-16 sm:pb-20">
-      <div className="mx-auto grid w-full max-w-6xl gap-5 px-4 sm:grid-cols-3 sm:px-6">
+    <section id="features" className="relative z-10 -mt-14 pb-16 sm:-mt-20 sm:pb-20">
+      <div className="mx-auto grid w-full max-w-6xl gap-4 px-4 sm:grid-cols-3 sm:gap-5 sm:px-6">
         {features.map((feature, index) => (
           <Reveal key={feature.title} delay={index * 90}>
             <div className="group surface-card flex h-full flex-col gap-4 rounded-2xl bg-white p-6 shadow-[0_12px_40px_rgba(30,80,50,0.1)]">

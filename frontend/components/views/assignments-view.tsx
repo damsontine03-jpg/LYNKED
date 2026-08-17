@@ -14,7 +14,9 @@ import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { useAppStore } from '@/lib/app-store'
 import { formatDueDate, formatShortDate } from '@/lib/date-utils'
-import { CLASS_OPTIONS, SUBJECT_OPTIONS } from '@/lib/ui-helpers'
+import { CLASS_OPTIONS, DEFAULT_CLASS, SUBJECT_OPTIONS } from '@/lib/ui-helpers'
+import { canCreateAssignments, canSubmitAssignments, viewerStudentId } from '@/lib/roles'
+import { showToast } from '@/lib/toast'
 import type { Assignment, AssignmentInput, Submission, User } from '@/lib/types'
 
 export function AssignmentsView({ user }: { user: User }) {
@@ -36,11 +38,16 @@ export function AssignmentsView({ user }: { user: User }) {
   const [fileName, setFileName] = useState('')
   const [comment, setComment] = useState('')
   const [submittedToast, setSubmittedToast] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<Assignment | null>(null)
 
   const teacherIds = useMemo(() => new Set(teachers.map((t) => t.id)), [teachers])
+  const studentId = viewerStudentId(user)
+  const canSubmit = canSubmitAssignments(user.role)
+  const canCreate = canCreateAssignments(user.role)
+  const isViewer = user.role === 'student' || user.role === 'parent'
 
   const scoped = useMemo(() => {
-    if (user.role === 'student') {
+    if (user.role === 'student' || user.role === 'parent') {
       return assignments.filter((a) => a.status === 'published')
     }
     if (user.role === 'admin') return assignments
@@ -57,7 +64,7 @@ export function AssignmentsView({ user }: { user: User }) {
 
   const mySub = (assignmentId: string) =>
     submissions.find(
-      (s) => s.assignment_id === assignmentId && s.student_id === user.id,
+      (s) => s.assignment_id === assignmentId && s.student_id === studentId,
     )
 
   function openCreate() {
@@ -85,19 +92,20 @@ export function AssignmentsView({ user }: { user: User }) {
   }
 
   function handleSubmitWork() {
-    if (!detail || !fileName) return
+    if (!canSubmit || !detail || !fileName) return
     submitAssignment(detail.id, fileName, comment)
     setSubmitOpen(false)
     setSubmittedToast(true)
     setFileName('')
     setComment('')
+    showToast('Assignment submitted')
   }
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-bold uppercase tracking-tight">
-          Upcoming assignments
+          {user.role === 'parent' ? 'Child assignments' : 'Upcoming assignments'}
         </h1>
         <div className="flex flex-wrap items-center gap-3">
           <Select
@@ -112,7 +120,7 @@ export function AssignmentsView({ user }: { user: User }) {
               </option>
             ))}
           </Select>
-          {user.role !== 'student' ? (
+          {canCreate ? (
             <Button size="lg" className="uppercase" onClick={openCreate}>
               <Plus />
               Add homework
@@ -121,7 +129,7 @@ export function AssignmentsView({ user }: { user: User }) {
         </div>
       </div>
 
-      {user.role === 'student' ? (
+      {isViewer ? (
         <UpcomingTable
           assignments={filtered.filter((a) => a.status === 'published')}
           submissionFor={(id) => mySub(id)}
@@ -138,7 +146,7 @@ export function AssignmentsView({ user }: { user: User }) {
             setEditing(a)
             setFormOpen(true)
           }}
-          onDelete={deleteAssignment}
+          onDelete={setDeleteTarget}
         />
       )}
 
@@ -148,10 +156,10 @@ export function AssignmentsView({ user }: { user: User }) {
         initial={editing}
         defaultClass={
           user.classNames?.[0] ||
-          (user.className === 'Whole school' ? 'SSS 2' : user.className)
+          (user.className === 'Whole school' ? DEFAULT_CLASS : user.className)
         }
         classOptions={
-          user.role === 'student'
+          isViewer
             ? []
             : user.classNames?.length
               ? user.classNames
@@ -223,7 +231,7 @@ export function AssignmentsView({ user }: { user: User }) {
               <Button variant="ghost" onClick={() => setDetail(null)}>
                 Close
               </Button>
-              {user.role === 'student' ? (
+              {canSubmit ? (
                 <Button
                   onClick={() => {
                     setSubmitOpen(true)
@@ -237,6 +245,34 @@ export function AssignmentsView({ user }: { user: User }) {
             </div>
           </div>
         ) : null}
+      </Dialog>
+
+      <Dialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        title="Delete assignment?"
+        description={
+          deleteTarget
+            ? `${deleteTarget.title} will be removed for the class.`
+            : undefined
+        }
+        className="max-w-md"
+      >
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="ghost" onClick={() => setDeleteTarget(null)}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() => {
+              if (!deleteTarget) return
+              deleteAssignment(deleteTarget.id)
+              setDeleteTarget(null)
+            }}
+          >
+            Delete
+          </Button>
+        </div>
       </Dialog>
 
       <Dialog
@@ -410,7 +446,7 @@ function TeacherAssignmentTable({
   assignments: Assignment[]
   submissions: Submission[]
   onOpen: (a: Assignment) => void
-  onDelete: (id: string) => void
+  onDelete: (a: Assignment) => void
 }) {
   if (assignments.length === 0) {
     return (
@@ -456,7 +492,7 @@ function TeacherAssignmentTable({
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  onClick={() => onDelete(a.id)}
+                  onClick={() => onDelete(a)}
                   aria-label={`Delete ${a.title}`}
                 >
                   <Trash2 className="text-destructive" />
@@ -504,7 +540,7 @@ function TeacherAssignmentTable({
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        onClick={() => onDelete(a.id)}
+                        onClick={() => onDelete(a)}
                         aria-label={`Delete ${a.title}`}
                       >
                         <Trash2 className="text-destructive" />

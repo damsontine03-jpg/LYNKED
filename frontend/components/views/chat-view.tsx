@@ -16,16 +16,20 @@ export function ChatView({ user }: { user: User }) {
     sendMessage,
     markConversationRead,
   } = useAppStore()
-  const [activeId, setActiveId] = useState<string | null>(ASSISTANT_CONV_ID)
+  const schoolChats = useMemo(
+    () => conversations.filter((c) => c.id !== ASSISTANT_CONV_ID),
+    [conversations],
+  )
+  const [activeId, setActiveId] = useState<string | null>(null)
   const [mobileThread, setMobileThread] = useState(false)
   const [draft, setDraft] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
-  const active = conversations.find((c) => c.id === activeId) ?? null
+  const active = schoolChats.find((c) => c.id === activeId) ?? null
   const messages = activeId ? messagesFor(activeId) : []
 
   useEffect(() => {
-    if (!activeId && conversations[0]) setActiveId(conversations[0].id)
-  }, [activeId, conversations])
+    if (!activeId && schoolChats[0]) setActiveId(schoolChats[0].id)
+  }, [activeId, schoolChats])
 
   useEffect(() => {
     if (activeId) markConversationRead(activeId)
@@ -36,8 +40,6 @@ export function ChatView({ user }: { user: User }) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [messages.length, activeId])
-
-  const grouped = useMemo(() => conversations, [conversations])
 
   function handleSend(e: React.FormEvent) {
     e.preventDefault()
@@ -56,7 +58,9 @@ export function ChatView({ user }: { user: User }) {
       <div>
         <h1 className="text-2xl font-bold uppercase tracking-tight">Chat</h1>
         <p className="text-sm text-muted-foreground">
-          Teachers, classmates, and your class group. School chat only.
+          {user.role === 'parent'
+            ? 'Talk with teachers assigned to your child\'s class.'
+            : 'Message teachers and classmates.'}
         </p>
       </div>
       <Card className="grid min-h-[min(32rem,calc(100dvh-14rem))] min-w-0 overflow-hidden lg:grid-cols-[18rem_1fr]">
@@ -66,12 +70,12 @@ export function ChatView({ user }: { user: User }) {
             mobileThread ? 'hidden lg:block' : 'block',
           )}
         >
-          {grouped.length === 0 ? (
+          {schoolChats.length === 0 ? (
             <p className="px-4 py-8 text-center text-sm text-muted-foreground">
-              No chats yet. Your teacher conversation will appear here once a teacher account exists.
+              No chats yet.
             </p>
           ) : (
-            grouped.map((c) => (
+            schoolChats.map((c) => (
               <button
                 key={c.id}
                 type="button"

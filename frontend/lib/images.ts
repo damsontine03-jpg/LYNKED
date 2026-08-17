@@ -1,5 +1,5 @@
 export const IMAGES = {
-  logo: '/logo.jpeg',
+  logo: '/logo.png',
   homework: '/illustrations/homework.jpg',
   classroom: '/illustrations/classroom.jpg',
   zoo: '/illustrations/zoo.jpg',

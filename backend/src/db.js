@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import pg from 'pg'
@@ -114,8 +115,14 @@ async function ensureExtraColumns() {
   const columns = [
     ['users', 'class_names'],
     ['users', 'subjects'],
+    ['users', 'child_id'],
+    ['users', 'child_email'],
+    ['users', 'public_id'],
     ['otp_codes', 'class_names'],
     ['otp_codes', 'subjects'],
+    ['otp_codes', 'child_id'],
+    ['otp_codes', 'child_email'],
+    ['exams', 'kind'],
   ]
   for (const [table, column] of columns) {
     if (pool) {
@@ -128,6 +135,117 @@ async function ensureExtraColumns() {
     if (!info.some((col) => col.name === column)) {
       sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`)
     }
+  }
+  if (pool) {
+    await pool.query(`
+      DO $$
+      DECLARE r record;
+      BEGIN
+        FOR r IN
+          SELECT con.conname, rel.relname
+          FROM pg_constraint con
+          JOIN pg_class rel ON rel.oid = con.conrelid
+          JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+          WHERE nsp.nspname = 'public'
+            AND con.contype = 'c'
+            AND (
+              (rel.relname = 'users' AND pg_get_constraintdef(con.oid) ILIKE '%role%')
+              OR (rel.relname = 'messages' AND pg_get_constraintdef(con.oid) ILIKE '%sender_role%')
+            )
+        LOOP
+          EXECUTE format('ALTER TABLE %I DROP CONSTRAINT IF EXISTS %I', r.relname, r.conname);
+        END LOOP;
+      END $$;
+    `)
+    try {
+      await pool.query(
+        `ALTER TABLE users ADD CONSTRAINT users_role_check
+         CHECK (role IN ('student', 'teacher', 'admin', 'parent'))`,
+      )
+    } catch (error) {
+      if (!String(error.message || error).includes('already exists')) throw error
+    }
+    try {
+      await pool.query(
+        `ALTER TABLE messages ADD CONSTRAINT messages_sender_role_check
+         CHECK (sender_role IN ('student', 'teacher', 'admin', 'parent'))`,
+      )
+    } catch (error) {
+      if (!String(error.message || error).includes('already exists')) throw error
+    }
+  }
+  await ensurePublicIds()
+}
+
+const PUBLIC_ID_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'
+
+function rolePublicPrefix(role) {
+  if (role === 'teacher') return 'TCH'
+  if (role === 'parent') return 'PAR'
+  if (role === 'admin') return 'ADM'
+  return 'STU'
+}
+
+function randomPublicCode(length = 6) {
+  const bytes = crypto.randomBytes(length)
+  let out = ''
+  for (let i = 0; i < length; i++) {
+    out += PUBLIC_ID_ALPHABET[bytes[i] % PUBLIC_ID_ALPHABET.length]
+  }
+  return out
+}
+
+export function normalizePublicId(value) {
+  const compact = String(value ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+  for (const prefix of ['STU', 'TCH', 'PAR', 'ADM']) {
+    if (compact.startsWith(prefix) && compact.length > prefix.length) {
+      return `${prefix}-${compact.slice(prefix.length)}`
+    }
+  }
+  return compact
+}
+
+export async function nextPublicId(role) {
+  for (let i = 0; i < 16; i++) {
+    const publicId = `${rolePublicPrefix(role)}-${randomPublicCode()}`
+    const existing = await queryOne('SELECT id FROM users WHERE public_id = ?', [publicId])
+    if (!existing) return publicId
+  }
+  throw new Error('Could not assign a unique ID.')
+}
+
+export async function findStudentByPublicId(value) {
+  const publicId = normalizePublicId(value)
+  const raw = String(value ?? '').trim()
+  if (!publicId && !raw) return null
+  if (publicId) {
+    const byPublic = await queryOne(
+      "SELECT * FROM users WHERE role = 'student' AND public_id = ?",
+      [publicId],
+    )
+    if (byPublic) return byPublic
+  }
+  if (!raw) return null
+  return queryOne("SELECT * FROM users WHERE role = 'student' AND id = ?", [raw])
+}
+
+async function ensurePublicIds() {
+  const missing = await query(
+    "SELECT id, role FROM users WHERE public_id IS NULL OR public_id = ''",
+  )
+  for (const row of missing) {
+    await execute('UPDATE users SET public_id = ? WHERE id = ?', [
+      await nextPublicId(row.role),
+      row.id,
+    ])
+  }
+  try {
+    await execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_public_id ON users(public_id)')
+  } catch (error) {
+    if (!String(error.message || error).includes('already exists')) throw error
   }
 }
 
@@ -184,6 +302,10 @@ export function mapUser(row) {
     subject: subjects[0] || undefined,
     subjects,
     phone: row.phone || undefined,
+    publicId: row.public_id || undefined,
+    childId: row.child_id || undefined,
+    childEmail: row.child_email || undefined,
+    childName: row.child_name || undefined,
   }
 }
 
@@ -335,6 +457,7 @@ export function mapExam(row) {
     room: row.room,
     className: row.class_name,
     published: Boolean(Number(row.published)),
+    kind: row.kind === 'exam' ? 'exam' : 'class',
   }
 }
 
@@ -366,14 +489,52 @@ export function normalizeClassName(value) {
     .replace(/\s+/g, ' ')
 }
 
+export const DEFAULT_CLASS = 'Class 1'
+
+export function classLevel(name) {
+  const text = String(name || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, ' ')
+  if (text.startsWith('JSS') || text.startsWith('JS ')) return 'Junior Secondary'
+  if (text.startsWith('SSS') || text.startsWith('SS ')) return 'Senior Secondary'
+  return 'Primary'
+}
+
+function compactClassName(value) {
+  return normalizeClassName(value).replace(/\s+/g, '').replace(/^sss/, 'ss')
+}
+
+function sssParts(value) {
+  const compact = compactClassName(value)
+  const match = compact.match(/^ss([123])(art|arts|commercial|commerce|science|sci)?$/)
+  if (!match) return null
+  const stream = {
+    art: 'art',
+    arts: 'art',
+    commercial: 'commercial',
+    commerce: 'commercial',
+    science: 'science',
+    sci: 'science',
+  }[match[2]] || ''
+  return { year: match[1], stream }
+}
+
 export function classMatches(studentClass, assignmentClass) {
   const student = normalizeClassName(studentClass)
   const assigned = normalizeClassName(assignmentClass)
   if (!assigned || assigned === 'whole school') return true
   if (!student) return true
   if (student === assigned) return true
-  const compact = (value) => value.replace(/\s+/g, '').replace(/^sss/, 'ss')
-  if (compact(student) === compact(assigned)) return true
+  if (compactClassName(student) === compactClassName(assigned)) return true
+
+  const studentSss = sssParts(student)
+  const assignedSss = sssParts(assigned)
+  if (studentSss || assignedSss) {
+    if (!studentSss || !assignedSss) return false
+    return studentSss.year === assignedSss.year && studentSss.stream === assignedSss.stream
+  }
+
   return student.includes(assigned) || assigned.includes(student)
 }
 
@@ -398,6 +559,39 @@ export async function listTeachers() {
   return rows.map(mapUser)
 }
 
+export async function listParents() {
+  const rows = await query(
+    "SELECT * FROM users WHERE role = 'parent' ORDER BY name",
+  )
+  return rows.map(mapUser)
+}
+
+export function userTeachesClass(user, className) {
+  const names = user.classNames?.length
+    ? user.classNames
+    : user.className
+      ? [user.className]
+      : []
+  return names.some((name) => classMatches(name, className))
+}
+
+export async function teachersForClassName(className) {
+  const teachers = await listTeachers()
+  const classRows = await query('SELECT * FROM classes')
+  const subjectRows = await query('SELECT * FROM subjects')
+  const ids = new Set()
+  for (const teacher of teachers) {
+    if (userTeachesClass(teacher, className)) ids.add(teacher.id)
+  }
+  for (const row of classRows) {
+    if (classMatches(row.name, className)) ids.add(row.teacher_id)
+  }
+  for (const row of subjectRows) {
+    if (classMatches(row.class_name, className)) ids.add(row.teacher_id)
+  }
+  return teachers.filter((teacher) => ids.has(teacher.id))
+}
+
 export async function getTeacher() {
   return queryOne("SELECT * FROM users WHERE role = 'teacher' LIMIT 1")
 }
@@ -407,15 +601,16 @@ export async function conversationIdFor(studentId) {
   return `conv-${teacher.id}-${studentId}`
 }
 
-export async function ensureConversation(studentId) {
-  const teacher = await getTeacher()
-  if (!teacher) return null
-  const id = `conv-${teacher.id}-${studentId}`
+export async function ensureConversation(participantId, teacherRow = null) {
+  const teacher = teacherRow || (await getTeacher())
+  if (!teacher || !participantId) return null
+  const teacherId = teacher.id
+  const id = `conv-${teacherId}-${participantId}`
   await execute(
     `INSERT INTO conversations (id, teacher_id, student_id)
      VALUES (?, ?, ?)
      ON CONFLICT (teacher_id, student_id) DO NOTHING`,
-    [id, teacher.id, studentId],
+    [id, teacherId, participantId],
   )
   return id
 }
@@ -424,10 +619,25 @@ export async function bootstrap(user) {
   user = (await queryOne('SELECT * FROM users WHERE id = ?', [user.id])) || user
   const students = await listStudents()
   const teachers = await listTeachers()
+  const parents = await listParents()
   const teacherRow = await getTeacher()
   const teacher = mapUser(teacherRow)
+  const childRow = user.child_id
+    ? await queryOne('SELECT * FROM users WHERE id = ?', [user.child_id])
+    : null
+  const child = mapUser(childRow)
+  const viewerStudentId = user.role === 'parent' ? user.child_id : user.id
+  const viewerClass =
+    user.role === 'parent' ? childRow?.class_name || user.class_name : user.class_name
+  const mappedUser = {
+    ...mapUser(user),
+    className: viewerClass || mapUser(user).className,
+    childName: child?.name,
+    childEmail: child?.email || user.child_email,
+    childPublicId: child?.publicId,
+  }
   const nameById = Object.fromEntries(
-    [...students, ...teachers, mapUser(user)]
+    [...students, ...teachers, ...parents, mappedUser, child]
       .filter(Boolean)
       .map((u) => [u.id, u.name]),
   )
@@ -440,13 +650,15 @@ export async function bootstrap(user) {
         )
       : user.role === 'admin'
         ? await query('SELECT * FROM homework ORDER BY due_date ASC')
-        : await query(
-            'SELECT * FROM homework WHERE student_id = ? ORDER BY due_date ASC',
-            [user.id],
-          )
+        : viewerStudentId
+          ? await query(
+              'SELECT * FROM homework WHERE student_id = ? ORDER BY due_date ASC',
+              [viewerStudentId],
+            )
+          : []
 
   const assignmentRowsRaw =
-    user.role === 'student'
+    user.role === 'student' || user.role === 'parent'
       ? await query(
           "SELECT * FROM assignments WHERE status = 'published' ORDER BY due_date ASC",
         )
@@ -457,20 +669,22 @@ export async function bootstrap(user) {
           )
         : await query('SELECT * FROM assignments ORDER BY due_date ASC')
   const assignmentRows =
-    user.role === 'student'
+    user.role === 'student' || user.role === 'parent'
       ? assignmentRowsRaw.filter((row) =>
-          classMatches(user.class_name, row.class_name),
+          classMatches(viewerClass, row.class_name),
         )
       : assignmentRowsRaw
 
   const assignmentIds = assignmentRows.map((row) => row.id)
   const submissionRows = assignmentIds.length
-    ? user.role === 'student'
-      ? await query(
-          `SELECT * FROM submissions
-           WHERE student_id = ? AND assignment_id IN (${assignmentIds.map(() => '?').join(',')})`,
-          [user.id, ...assignmentIds],
-        )
+    ? user.role === 'student' || user.role === 'parent'
+      ? viewerStudentId
+        ? await query(
+            `SELECT * FROM submissions
+             WHERE student_id = ? AND assignment_id IN (${assignmentIds.map(() => '?').join(',')})`,
+            [viewerStudentId, ...assignmentIds],
+          )
+        : []
       : await query(
           `SELECT * FROM submissions WHERE assignment_id IN (${assignmentIds.map(() => '?').join(',')})`,
           assignmentIds,
@@ -480,10 +694,12 @@ export async function bootstrap(user) {
   const cardRows =
     user.role === 'teacher' || user.role === 'admin'
       ? await query('SELECT id FROM report_cards ORDER BY position ASC')
-      : await query(
-          'SELECT id FROM report_cards WHERE student_id = ? AND published = 1 ORDER BY position ASC',
-          [user.id],
-        )
+      : viewerStudentId
+        ? await query(
+            'SELECT id FROM report_cards WHERE student_id = ? AND published = 1 ORDER BY position ASC',
+            [viewerStudentId],
+          )
+        : []
 
   const notifications = (
     await query(
@@ -501,10 +717,10 @@ export async function bootstrap(user) {
       ? await query('SELECT * FROM events ORDER BY date ASC')
       : await query('SELECT * FROM events WHERE published = 1 ORDER BY date ASC')
   const examRows =
-    user.role === 'student'
+    user.role === 'student' || user.role === 'parent'
       ? await query(
           'SELECT * FROM exams WHERE published = 1 AND class_name = ? ORDER BY date ASC',
-          [user.class_name],
+          [viewerClass],
         )
       : user.role === 'admin'
         ? await query('SELECT * FROM exams ORDER BY date ASC')
@@ -520,22 +736,49 @@ export async function bootstrap(user) {
     [user.id],
   )
 
-  const pairs =
-    user.role === 'teacher'
-      ? await Promise.all(
-          students.map(async (s) => ({
-            id: await ensureConversation(s.id),
-            participant: s,
-          })),
-        )
-      : teacher
-        ? [
-            {
-              id: await ensureConversation(user.id),
-              participant: teacher,
-            },
-          ]
-        : []
+  let pairs = []
+  if (user.role === 'teacher') {
+    const myNames = parseStringList(user.class_names)
+    if (user.class_name && !myNames.includes(user.class_name)) myNames.unshift(user.class_name)
+    const myStudentIds = new Set(
+      students
+        .filter((s) => myNames.some((name) => classMatches(s.className, name)))
+        .map((s) => s.id),
+    )
+    const relatedParents = parents.filter((p) => {
+      if (!p.childId) return false
+      return myStudentIds.size ? myStudentIds.has(p.childId) : true
+    })
+    pairs = await Promise.all([
+      ...students.map(async (s) => ({
+        id: await ensureConversation(s.id, user),
+        participant: s,
+      })),
+      ...relatedParents.map(async (p) => ({
+        id: await ensureConversation(p.id, user),
+        participant: {
+          ...p,
+          childName: students.find((s) => s.id === p.childId)?.name,
+        },
+      })),
+    ])
+  } else if (user.role === 'parent') {
+    const classTeachers = await teachersForClassName(viewerClass)
+    const list = classTeachers.length ? classTeachers : teacher ? [teacher] : []
+    pairs = await Promise.all(
+      list.map(async (t) => ({
+        id: await ensureConversation(user.id, t),
+        participant: t,
+      })),
+    )
+  } else if (user.role === 'student' && teacher) {
+    pairs = [
+      {
+        id: await ensureConversation(user.id, teacherRow),
+        participant: teacher,
+      },
+    ]
+  }
 
   const rawMessages =
     user.role === 'teacher'
@@ -577,7 +820,10 @@ export async function bootstrap(user) {
       id,
       kind: 'dm',
       participant_id: participant.id,
-      participant_name: participant.name,
+      participant_name:
+        participant.role === 'parent' && participant.childName
+          ? `${participant.name} (parent of ${participant.childName})`
+          : participant.name,
       participant_role: participant.role,
       online: participant.role === 'teacher',
       lastMessage,
@@ -586,9 +832,15 @@ export async function bootstrap(user) {
   }
 
   return {
-    user: mapUser(user),
+    user: mappedUser,
     students,
     teachers,
+    parents: parents.map((p) => ({
+      ...p,
+      childName: students.find((s) => s.id === p.childId)?.name,
+      childPublicId: students.find((s) => s.id === p.childId)?.publicId,
+      className: students.find((s) => s.id === p.childId)?.className || p.className,
+    })),
     classes: classRows.map(mapClass),
     subjects: subjectRows.map(mapSubject),
     homework: homeworkRows.map(mapHomework),

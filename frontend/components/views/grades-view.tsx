@@ -6,13 +6,14 @@ import { Select } from '@/components/ui/select'
 import { useAppStore } from '@/lib/app-store'
 import { formatDueDate } from '@/lib/date-utils'
 import { gradeTone, percent, SUBJECT_OPTIONS } from '@/lib/ui-helpers'
+import { viewerStudentId } from '@/lib/roles'
 import type { User } from '@/lib/types'
 
 export function GradesView({ user }: { user: User }) {
   const { assignments, submissions, students } = useAppStore()
   const [subject, setSubject] = useState('all')
   const [studentId, setStudentId] = useState(
-    user.role === 'student' ? user.id : 'all',
+    user.role === 'student' || user.role === 'parent' ? viewerStudentId(user) : 'all',
   )
 
   const rows = useMemo(() => {
@@ -44,9 +45,11 @@ export function GradesView({ user }: { user: User }) {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-1">
-        <h1 className="text-2xl font-bold uppercase tracking-tight">Grades</h1>
+        <h1 className="text-2xl font-bold uppercase tracking-tight">Assignment grades</h1>
         <p className="text-sm text-muted-foreground">
-          Scores and teacher feedback. Game scores never appear here.
+          {user.role === 'parent'
+            ? `Scores and teacher feedback for ${user.childName || 'your child'}.`
+            : 'Scores and teacher feedback on submitted assignments.'}
         </p>
       </div>
 
@@ -59,7 +62,7 @@ export function GradesView({ user }: { user: User }) {
             </option>
           ))}
         </Select>
-        {user.role !== 'student' ? (
+        {user.role === 'teacher' || user.role === 'admin' ? (
           <Select
             value={studentId}
             onChange={(e) => setStudentId(e.target.value)}

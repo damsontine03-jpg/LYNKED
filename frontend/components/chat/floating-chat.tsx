@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, MessageCircle, Minus, SendHorizontal, X } from 'lucide-react'
-import { ASSISTANT_CONV_ID } from '@/lib/assistant'
+import { ASSISTANT_CONV_ID, suggestedQuestions } from '@/lib/assistant'
 import { useAppStore } from '@/lib/app-store'
 import { clockTime, relativeTime } from '@/lib/date-utils'
 import { cn } from '@/lib/utils'
@@ -89,6 +89,9 @@ export function FloatingChat({ user }: { user: User }) {
     setOpen(false)
   }
 
+  const isAssistant = activeId === ASSISTANT_CONV_ID
+  const suggestions = suggestedQuestions(user.role)
+  const showSuggestions = isAssistant && messages.filter((m) => m.sender_id === user.id).length === 0
   const showList = !activeConversation
   const showBack = conversations.length > 1 && Boolean(activeConversation)
 
@@ -164,7 +167,9 @@ export function FloatingChat({ user }: { user: User }) {
                     />
                     {activeConversation.online ? 'Online' : 'Offline'}
                     {' · '}
-                    {activeConversation.participant_role}
+                    {activeConversation.id === ASSISTANT_CONV_ID
+                      ? 'School assistant'
+                      : activeConversation.participant_role}
                   </span>
                 ) : (
                   `${conversations.length} conversation${conversations.length === 1 ? '' : 's'}`
@@ -203,8 +208,15 @@ export function FloatingChat({ user }: { user: User }) {
                 className="scroll-slim flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 sm:p-4"
               >
                 {messages.length === 0 ? (
-                  <p className="m-auto px-4 text-center text-sm text-muted-foreground">
-                    No messages yet. Say hello!
+                  <p
+                    className={cn(
+                      'text-sm text-muted-foreground',
+                      showSuggestions ? 'px-1' : 'm-auto max-w-xs px-4 text-center',
+                    )}
+                  >
+                    {isAssistant
+                      ? `Hello, ${user.name.trim().split(/\s+/)[0] || 'there'}. I am your school assistant. Ask a question or pick one below.`
+                      : 'No messages yet. Say hello!'}
                   </p>
                 ) : (
                   messages.map((m) => {
@@ -219,7 +231,7 @@ export function FloatingChat({ user }: { user: User }) {
                       >
                         <div
                           className={cn(
-                            'rounded-2xl px-3.5 py-2 text-sm leading-relaxed break-words',
+                            'whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm leading-relaxed break-words',
                             mine
                               ? 'rounded-br-md bg-primary text-primary-foreground'
                               : 'rounded-bl-md bg-muted text-foreground',
@@ -234,6 +246,20 @@ export function FloatingChat({ user }: { user: User }) {
                     )
                   })
                 )}
+                {showSuggestions ? (
+                  <div className="flex flex-col gap-2">
+                    {suggestions.map((question) => (
+                      <button
+                        key={question}
+                        type="button"
+                        onClick={() => sendMessage(ASSISTANT_CONV_ID, question)}
+                        className="rounded-2xl border border-border bg-background px-3 py-2 text-left text-xs text-foreground transition-colors hover:border-ring/40 hover:bg-muted"
+                      >
+                        {question}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               <form
@@ -275,7 +301,7 @@ function ConversationList({
   if (conversations.length === 0) {
     return (
       <p className="m-auto px-6 py-10 text-center text-sm text-muted-foreground">
-        No chats yet. Your teacher conversation will appear here once a teacher account exists.
+        No chats yet.
       </p>
     )
   }

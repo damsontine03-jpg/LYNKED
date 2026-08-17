@@ -1,4 +1,4 @@
-import { Check, GraduationCap, UserRound } from 'lucide-react'
+import { Check, GraduationCap, UserRound, Users } from 'lucide-react'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 
@@ -23,13 +23,23 @@ const roles = [
       'See which work is done',
     ],
   },
+  {
+    icon: Users,
+    label: 'For parents',
+    title: 'Stay close to schoolwork',
+    points: [
+      'See your child\'s assignments, grades, and report cards',
+      'Follow exams and school events',
+      'Message teachers for your child\'s class',
+    ],
+  },
 ]
 
 export function Roles() {
   return (
     <section id="roles" className="border-t border-border">
       <div className="mx-auto w-full max-w-6xl px-4 py-16 md:py-24">
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-3">
           {roles.map((role) => (
             <div
               key={role.label}

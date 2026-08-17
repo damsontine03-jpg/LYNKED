@@ -26,7 +26,7 @@ export function BrandLogo({
       width={spec.width}
       height={spec.height}
       priority={priority}
-      className={cn('w-auto object-contain', spec.className, className)}
+      className={cn('w-auto bg-transparent object-contain', spec.className, className)}
     />
   )
 }

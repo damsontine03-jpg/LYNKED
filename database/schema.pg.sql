@@ -6,10 +6,13 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
   phone TEXT,
-  role TEXT NOT NULL CHECK (role IN ('student', 'teacher', 'admin')),
+  role TEXT NOT NULL CHECK (role IN ('student', 'teacher', 'admin', 'parent')),
   class_name TEXT NOT NULL,
   class_names TEXT,
   subjects TEXT,
+  child_id TEXT,
+  child_email TEXT,
+  public_id TEXT UNIQUE,
   verification_key TEXT
 );
 
@@ -76,7 +79,7 @@ CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL REFERENCES conversations(id),
   sender_id TEXT NOT NULL REFERENCES users(id),
-  sender_role TEXT NOT NULL CHECK (sender_role IN ('student', 'teacher')),
+  sender_role TEXT NOT NULL CHECK (sender_role IN ('student', 'teacher', 'admin', 'parent')),
   body TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -167,6 +170,7 @@ CREATE TABLE IF NOT EXISTS exams (
   duration TEXT NOT NULL,
   room TEXT NOT NULL,
   class_name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'class',
   published INTEGER NOT NULL DEFAULT 1 CHECK (published IN (0, 1))
 );
 
@@ -204,6 +208,8 @@ CREATE TABLE IF NOT EXISTS otp_codes (
   class_name TEXT,
   class_names TEXT,
   subjects TEXT,
+  child_id TEXT,
+  child_email TEXT,
   expires_at TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
   consumed INTEGER NOT NULL DEFAULT 0,
@@ -223,5 +229,12 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS class_names TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS subjects TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS child_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS child_email TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS public_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_public_id ON users(public_id);
 ALTER TABLE otp_codes ADD COLUMN IF NOT EXISTS class_names TEXT;
 ALTER TABLE otp_codes ADD COLUMN IF NOT EXISTS subjects TEXT;
+ALTER TABLE otp_codes ADD COLUMN IF NOT EXISTS child_id TEXT;
+ALTER TABLE otp_codes ADD COLUMN IF NOT EXISTS child_email TEXT;
+ALTER TABLE exams ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'class';

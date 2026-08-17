@@ -5,7 +5,6 @@ import cors from 'cors'
 import {
   bootstrap,
   execute,
-  getReportCard,
   initDb,
   listStudents,
   mapUser,
@@ -17,8 +16,12 @@ import {
   subjectCode,
   usingNeon,
   withTransaction,
+  DEFAULT_CLASS,
+  classLevel,
+  nextPublicId,
+  findStudentByPublicId,
 } from './db.js'
-import { emailConfigured, sendInviteEmail, sendOtpEmail } from './mail.js'
+import { emailConfigured, sendInviteEmail, sendOtpEmail, sendAssignmentEmail } from './mail.js'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 4000
@@ -62,11 +65,17 @@ function normalizeEmail(value) {
 }
 
 function parseRole(value) {
-  if (value === 'teacher' || value === 'admin' || value === 'student') return value
+  if (value === 'teacher' || value === 'admin' || value === 'student' || value === 'parent') {
+    return value
+  }
   return 'student'
 }
 
-function listsFromBody(body, fallbackClass = 'SSS 2') {
+function isStaff(role) {
+  return role === 'teacher' || role === 'admin'
+}
+
+function listsFromBody(body, fallbackClass = DEFAULT_CLASS) {
   const classNames = parseStringList(body?.classNames ?? body?.className ?? fallbackClass)
   const subjects = parseStringList(body?.subjects ?? body?.subject)
   return {
@@ -76,7 +85,7 @@ function listsFromBody(body, fallbackClass = 'SSS 2') {
 }
 
 async function saveTeacherLoad(teacherId, teacherName, classNames, subjects) {
-  const classes = classNames.length ? classNames : ['SSS 2']
+  const classes = classNames.length ? classNames : [DEFAULT_CLASS]
   const subjectNames = subjects.length ? subjects : []
   for (const className of classes) {
     const existing = await queryOne(
@@ -86,8 +95,8 @@ async function saveTeacherLoad(teacherId, teacherName, classNames, subjects) {
     if (!existing) {
       await execute(
         `INSERT INTO classes (id, name, level, teacher_id, teacher_name, student_count)
-         VALUES (?, ?, 'Senior Secondary', ?, ?, 0)`,
-        [`class-${crypto.randomUUID()}`, className, teacherId, teacherName],
+         VALUES (?, ?, ?, ?, ?, 0)`,
+        [`class-${crypto.randomUUID()}`, className, classLevel(className), teacherId, teacherName],
       )
     }
   }
@@ -115,11 +124,24 @@ async function saveTeacherLoad(teacherId, teacherName, classNames, subjects) {
   }
 }
 
-async function insertUserRecord({ id, name, email, role, classNames, subjects }) {
-  const classes = classNames.length ? classNames : ['SSS 2']
+async function insertUserRecord({
+  id,
+  name,
+  email,
+  role,
+  classNames,
+  subjects,
+  childId = null,
+  childEmail = null,
+}) {
+  const classes = classNames.length ? classNames : [DEFAULT_CLASS]
+  const publicId = await nextPublicId(role)
   await execute(
-    `INSERT INTO users (id, name, email, phone, role, class_name, class_names, subjects, verification_key)
-     VALUES (?, ?, ?, '', ?, ?, ?, ?, 'otp')`,
+    `INSERT INTO users (
+      id, name, email, phone, role, class_name, class_names, subjects,
+      verification_key, child_id, child_email, public_id
+    )
+     VALUES (?, ?, ?, '', ?, ?, ?, ?, 'otp', ?, ?, ?)`,
     [
       id,
       name,
@@ -128,20 +150,55 @@ async function insertUserRecord({ id, name, email, role, classNames, subjects })
       classes[0],
       encodeStringList(classes),
       encodeStringList(subjects),
+      childId,
+      childEmail,
+      publicId,
     ],
   )
   if (role === 'teacher') {
     await saveTeacherLoad(id, name, classes, subjects)
   }
+  return publicId
 }
 
-async function insertOtp({ email, code, purpose, name, role, classNames, subjects }) {
-  const classes = classNames.length ? classNames : ['SSS 2']
+async function resolveChildStudent(rawId) {
+  const childPublicId = String(rawId ?? '').trim()
+  if (!childPublicId) {
+    return { error: 'Enter your child\'s student ID.' }
+  }
+  const child = await findStudentByPublicId(childPublicId)
+  if (!child) {
+    return {
+      error: 'No student account found for that ID. Ask the school to add the student first.',
+    }
+  }
+  const classNames = parseStringList(child.class_names).length
+    ? parseStringList(child.class_names)
+    : [child.class_name || DEFAULT_CLASS]
+  return {
+    childId: child.id,
+    childEmail: child.email || null,
+    classNames,
+  }
+}
+
+async function insertOtp({
+  email,
+  code,
+  purpose,
+  name,
+  role,
+  classNames,
+  subjects,
+  childId = null,
+  childEmail = null,
+}) {
+  const classes = classNames.length ? classNames : [DEFAULT_CLASS]
   await execute(
     `INSERT INTO otp_codes (
       id, email, code_hash, purpose, name, role, class_name, class_names, subjects,
-      expires_at, attempts, consumed, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+      child_id, child_email, expires_at, attempts, consumed, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
     [
       `otp-${crypto.randomUUID()}`,
       email,
@@ -152,6 +209,8 @@ async function insertOtp({ email, code, purpose, name, role, classNames, subject
       classes[0],
       encodeStringList(classes),
       encodeStringList(subjects),
+      childId,
+      childEmail,
       new Date(Date.now() + OTP_TTL_MS).toISOString(),
       nowIso(),
     ],
@@ -174,6 +233,188 @@ async function appendUserList(userId, field, value) {
   const names = parseStringList(user.subjects)
   if (!names.includes(value)) names.push(value)
   await execute('UPDATE users SET subjects = ? WHERE id = ?', [encodeStringList(names), userId])
+}
+
+async function listParentsForStudents(studentIds) {
+  if (!studentIds.length) return []
+  const placeholders = studentIds.map(() => '?').join(', ')
+  return query(
+    `SELECT id, name, email, child_id FROM users WHERE role = 'parent' AND child_id IN (${placeholders})`,
+    studentIds,
+  )
+}
+
+async function emailParentsAboutAssignment({
+  students,
+  title,
+  subject,
+  dueDate,
+  teacherName,
+  className,
+}) {
+  const parents = await listParentsForStudents(students.map((student) => student.id))
+  if (!parents.length) return
+  const nameById = Object.fromEntries(students.map((student) => [student.id, student.name]))
+  await Promise.all(
+    parents.map(async (parent) => {
+      if (!parent.email) return
+      try {
+        await sendAssignmentEmail({
+          to: parent.email,
+          parentName: parent.name,
+          childName: nameById[parent.child_id] || 'your child',
+          title,
+          subject,
+          dueDate,
+          teacherName,
+          className,
+        })
+      } catch (error) {
+        console.error(`Assignment email failed for ${parent.email}:`, error.message)
+      }
+    }),
+  )
+}
+
+function letterGrade(score) {
+  const n = Number(score)
+  if (!Number.isFinite(n)) return 'F'
+  if (n >= 80) return 'A'
+  if (n >= 70) return 'B'
+  if (n >= 60) return 'C'
+  if (n >= 50) return 'D'
+  return 'F'
+}
+
+function defaultGradeRemark(grade) {
+  if (grade === 'A') return 'Excellent work'
+  if (grade === 'B') return 'Good work'
+  if (grade === 'C') return 'Fair. Keep practising'
+  if (grade === 'D') return 'Needs more effort'
+  return 'Needs serious improvement'
+}
+
+function parseReportResults(raw) {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((row) => {
+      const subject = String(row?.subject ?? '').trim()
+      if (!subject) return null
+      const score = Math.max(0, Math.min(100, Math.round(Number(row.score) || 0)))
+      const grade = letterGrade(score)
+      const remark = String(row?.remark ?? '').trim() || defaultGradeRemark(grade)
+      return { subject, score, grade, remark }
+    })
+    .filter(Boolean)
+}
+
+async function recountReportPositions(className, term) {
+  const rows = await query(
+    `SELECT id FROM report_cards
+     WHERE class_name = ? AND term = ?
+     ORDER BY average DESC, student_name ASC`,
+    [className, term],
+  )
+  let position = 1
+  for (const row of rows) {
+    await execute('UPDATE report_cards SET position = ? WHERE id = ?', [position, row.id])
+    position += 1
+  }
+}
+
+async function notifyReportPublished(studentId, studentName, term) {
+  const created = nowIso()
+  await execute(
+    `INSERT INTO notifications (id, user_id, type, title, body, created_at, read)
+     VALUES (?, ?, 'grade', ?, ?, ?, 0)`,
+    [
+      `n-${crypto.randomUUID()}`,
+      studentId,
+      'Report Card is ready',
+      `Your ${term} report card has been published.`,
+      created,
+    ],
+  )
+  const parents = await query(
+    "SELECT id FROM users WHERE role = 'parent' AND child_id = ?",
+    [studentId],
+  )
+  for (const parent of parents) {
+    await execute(
+      `INSERT INTO notifications (id, user_id, type, title, body, created_at, read)
+       VALUES (?, ?, 'grade', ?, ?, ?, 0)`,
+      [
+        `n-${crypto.randomUUID()}`,
+        parent.id,
+        'Report Card is ready',
+        `${studentName}'s ${term} report card has been published.`,
+        created,
+      ],
+    )
+  }
+}
+
+async function saveReportCardRecord({ id, student, term, results, teacherRemark, published }) {
+  const scores = results.map((row) => row.score)
+  const average = scores.length
+    ? Math.round(scores.reduce((sum, n) => sum + n, 0) / scores.length)
+    : 0
+  const overall = letterGrade(average)
+  const now = nowIso()
+  const existing = id ? await queryOne('SELECT * FROM report_cards WHERE id = ?', [id]) : null
+  const cardId = existing?.id || `rc-${crypto.randomUUID()}`
+  const className = student.class_name || DEFAULT_CLASS
+
+  if (existing) {
+    await execute(
+      `UPDATE report_cards SET
+        student_id = ?, student_name = ?, class_name = ?, term = ?,
+        average = ?, overall_grade = ?, teacher_remark = ?, published = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        student.id,
+        student.name,
+        className,
+        term,
+        average,
+        overall,
+        teacherRemark,
+        published ? 1 : 0,
+        now,
+        cardId,
+      ],
+    )
+    await execute('DELETE FROM report_card_results WHERE report_card_id = ?', [cardId])
+  } else {
+    await execute(
+      `INSERT INTO report_cards (
+        id, student_id, student_name, class_name, term, average, overall_grade,
+        position, teacher_remark, published, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+      [
+        cardId,
+        student.id,
+        student.name,
+        className,
+        term,
+        average,
+        overall,
+        teacherRemark,
+        published ? 1 : 0,
+        now,
+      ],
+    )
+  }
+
+  for (const row of results) {
+    await execute(
+      `INSERT INTO report_card_results (id, report_card_id, subject, score, grade, remark)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [`rr-${crypto.randomUUID()}`, cardId, row.subject, row.score, row.grade, row.remark],
+    )
+  }
+  await recountReportPositions(className, term)
+  return cardId
 }
 
 async function requireUser(req, res, next) {
@@ -228,7 +469,9 @@ app.post('/api/auth/request-otp', async (req, res, next) => {
     const purpose = req.body?.purpose === 'signup' ? 'signup' : 'signin'
     const name = String(req.body?.name ?? '').trim()
     const role = parseRole(req.body?.role)
-    const { classNames, subjects } = listsFromBody(req.body)
+    let { classNames, subjects } = listsFromBody(req.body)
+    let childId = null
+    let childEmail = null
 
     if (!EMAIL_RE.test(email)) {
       return res.status(400).json({ error: 'Enter a valid email address.' })
@@ -241,6 +484,19 @@ app.post('/api/auth/request-otp', async (req, res, next) => {
     }
     if (purpose === 'signup' && role === 'teacher' && classNames.length === 0) {
       return res.status(400).json({ error: 'Choose at least one class.' })
+    }
+    if (purpose === 'signup' && role === 'parent') {
+      const child = await resolveChildStudent(
+        req.body?.childPublicId ?? req.body?.childId ?? req.body?.childEmail,
+      )
+      if (child.error) {
+        return res.status(child.error.startsWith('No student') ? 404 : 400).json({
+          error: child.error,
+        })
+      }
+      childId = child.childId
+      childEmail = child.childEmail
+      classNames = child.classNames
     }
 
     const existing = await queryOne('SELECT * FROM users WHERE email = ?', [email])
@@ -278,6 +534,8 @@ app.post('/api/auth/request-otp', async (req, res, next) => {
           : [existing.class_name],
       subjects:
         purpose === 'signup' ? subjects : parseStringList(existing.subjects),
+      childId: purpose === 'signup' ? childId : existing.child_id,
+      childEmail: purpose === 'signup' ? childEmail || null : existing.child_email,
     })
 
     const sent = await sendOtpEmail({ to: email, code, purpose })
@@ -338,7 +596,7 @@ app.post('/api/auth/verify-otp', async (req, res, next) => {
       const role = parseRole(otp.role)
       const classNames = parseStringList(otp.class_names).length
         ? parseStringList(otp.class_names)
-        : [otp.class_name || 'SSS 2']
+        : [otp.class_name || DEFAULT_CLASS]
       const subjects = parseStringList(otp.subjects)
       await insertUserRecord({
         id,
@@ -347,6 +605,8 @@ app.post('/api/auth/verify-otp', async (req, res, next) => {
         role,
         classNames,
         subjects,
+        childId: otp.child_id || null,
+        childEmail: otp.child_email || null,
       })
       user = await queryOne('SELECT * FROM users WHERE id = ?', [id])
     }
@@ -399,8 +659,12 @@ app.post('/api/users', requireUser, async (req, res, next) => {
     }
     const name = String(req.body?.name ?? '').trim()
     const email = normalizeEmail(req.body?.email)
-    const role = req.body?.role === 'teacher' ? 'teacher' : 'student'
-    const { classNames, subjects } = listsFromBody(req.body)
+    const requested = req.body?.role
+    const role =
+      requested === 'teacher' ? 'teacher' : requested === 'parent' ? 'parent' : 'student'
+    let { classNames, subjects } = listsFromBody(req.body)
+    let childId = null
+    let childEmail = null
 
     if (!name) {
       return res.status(400).json({ error: 'Enter their full name.' })
@@ -411,6 +675,22 @@ app.post('/api/users', requireUser, async (req, res, next) => {
     if (role === 'teacher' && subjects.length === 0) {
       return res.status(400).json({ error: 'Choose at least one subject.' })
     }
+    if (role === 'parent') {
+      const child = await resolveChildStudent(
+        req.body?.childPublicId ?? req.body?.childId ?? req.body?.childEmail,
+      )
+      if (child.error) {
+        return res.status(child.error.startsWith('No student') ? 404 : 400).json({
+          error:
+            child.error === 'Enter your child\'s student ID.'
+              ? 'Enter the student ID for their child.'
+              : 'No student account found for that ID.',
+        })
+      }
+      childId = child.childId
+      childEmail = child.childEmail
+      classNames = child.classNames
+    }
 
     const existing = await queryOne('SELECT * FROM users WHERE email = ?', [email])
     if (existing) {
@@ -418,7 +698,16 @@ app.post('/api/users', requireUser, async (req, res, next) => {
     }
 
     const id = `user-${crypto.randomUUID()}`
-    await insertUserRecord({ id, name, email, role, classNames, subjects })
+    const publicId = await insertUserRecord({
+      id,
+      name,
+      email,
+      role,
+      classNames,
+      subjects,
+      childId,
+      childEmail: childEmail || null,
+    })
 
     const code = String(crypto.randomInt(100000, 1000000))
     await insertOtp({
@@ -429,6 +718,8 @@ app.post('/api/users', requireUser, async (req, res, next) => {
       role,
       classNames,
       subjects,
+      childId,
+      childEmail: childEmail || null,
     })
 
     let emailSent = false
@@ -439,6 +730,7 @@ app.post('/api/users', requireUser, async (req, res, next) => {
         name,
         role,
         className: classNames.join(', '),
+        publicId,
       })
       emailSent = Boolean(sent.delivered)
     } catch (error) {
@@ -448,6 +740,7 @@ app.post('/api/users', requireUser, async (req, res, next) => {
     res.json({
       ...(await bootstrap(req.user)),
       emailSent,
+      publicId,
     })
   } catch (error) {
     next(error)
@@ -456,7 +749,7 @@ app.post('/api/users', requireUser, async (req, res, next) => {
 
 app.post('/api/classes', requireUser, async (req, res, next) => {
   try {
-    if (req.user.role === 'student') {
+    if (!isStaff(req.user.role)) {
       return res.status(403).json({ error: 'Only teachers can add classes.' })
     }
     const name = String(req.body?.name ?? '').trim()
@@ -474,8 +767,8 @@ app.post('/api/classes', requireUser, async (req, res, next) => {
     if (!existing) {
       await execute(
         `INSERT INTO classes (id, name, level, teacher_id, teacher_name, student_count)
-         VALUES (?, ?, 'Senior Secondary', ?, ?, 0)`,
-        [`class-${crypto.randomUUID()}`, name, teacher.id, teacher.name],
+         VALUES (?, ?, ?, ?, ?, 0)`,
+        [`class-${crypto.randomUUID()}`, name, classLevel(name), teacher.id, teacher.name],
       )
     }
     await appendUserList(teacher.id, 'class_names', name)
@@ -487,11 +780,11 @@ app.post('/api/classes', requireUser, async (req, res, next) => {
 
 app.post('/api/subjects', requireUser, async (req, res, next) => {
   try {
-    if (req.user.role === 'student') {
+    if (!isStaff(req.user.role)) {
       return res.status(403).json({ error: 'Only teachers can add subjects.' })
     }
     const name = String(req.body?.name ?? '').trim()
-    const className = String(req.body?.className ?? req.user.class_name ?? 'SSS 2').trim() || 'SSS 2'
+    const className = String(req.body?.className ?? req.user.class_name ?? DEFAULT_CLASS).trim() || DEFAULT_CLASS
     if (!name) {
       return res.status(400).json({ error: 'Enter a subject name.' })
     }
@@ -524,9 +817,26 @@ app.post('/api/subjects', requireUser, async (req, res, next) => {
   }
 })
 
+app.delete('/api/subjects/:id', requireUser, async (req, res, next) => {
+  try {
+    if (!isStaff(req.user.role)) {
+      return res.status(403).json({ error: 'Only teachers can remove a subject.' })
+    }
+    const existing = await queryOne('SELECT * FROM subjects WHERE id = ?', [req.params.id])
+    if (!existing) return res.status(404).json({ error: 'Subject not found.' })
+    if (req.user.role !== 'admin' && existing.teacher_id !== req.user.id) {
+      return res.status(403).json({ error: 'You can only remove a subject you added.' })
+    }
+    await execute('DELETE FROM subjects WHERE id = ?', [req.params.id])
+    res.json(await bootstrap(req.user))
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.post('/api/homework', requireUser, async (req, res, next) => {
   try {
-    if (req.user.role !== 'teacher' && req.user.role !== 'admin') {
+    if (!isStaff(req.user.role)) {
       return res.status(403).json({ error: 'Only teachers can create homework' })
     }
     const input = req.body ?? {}
@@ -570,7 +880,33 @@ app.post('/api/homework', requireUser, async (req, res, next) => {
             created,
           ],
         )
+        const parentRows = await query(
+          "SELECT id FROM users WHERE role = 'parent' AND child_id = ?",
+          [studentId],
+        )
+        for (const parent of parentRows) {
+          await tx.execute(
+            `INSERT INTO notifications (id, user_id, type, title, body, created_at, read)
+             VALUES (?, ?, 'assignment', ?, ?, ?, 0)`,
+            [
+              `n-${crypto.randomUUID()}`,
+              parent.id,
+              `New homework: ${String(input.title ?? '').trim()}`,
+              `${req.user.name} assigned a new ${input.subject} task.`,
+              created,
+            ],
+          )
+        }
       }
+    })
+    const studentRows = students.filter((student) => targets.includes(student.id))
+    await emailParentsAboutAssignment({
+      students: studentRows,
+      title: String(input.title ?? '').trim(),
+      subject: String(input.subject ?? 'class'),
+      dueDate: String(input.due_date ?? ''),
+      teacherName: req.user.name,
+      className,
     })
     res.json(await bootstrap(req.user))
   } catch (error) {
@@ -580,6 +916,11 @@ app.post('/api/homework', requireUser, async (req, res, next) => {
 
 app.patch('/api/homework/:id', requireUser, async (req, res, next) => {
   try {
+    if (req.user.role === 'parent') {
+      return res.status(403).json({
+        error: 'Parents can view assignments but cannot change them.',
+      })
+    }
     const existing = await queryOne('SELECT * FROM homework WHERE id = ?', [req.params.id])
     if (!existing) return res.status(404).json({ error: 'Homework not found' })
     const patch = req.body ?? {}
@@ -612,6 +953,11 @@ app.patch('/api/homework/:id', requireUser, async (req, res, next) => {
 
 app.delete('/api/homework/:id', requireUser, async (req, res, next) => {
   try {
+    if (req.user.role === 'parent') {
+      return res.status(403).json({
+        error: 'Parents can view assignments but cannot change them.',
+      })
+    }
     await execute('DELETE FROM homework WHERE id = ?', [req.params.id])
     res.json(await bootstrap(req.user))
   } catch (error) {
@@ -621,7 +967,7 @@ app.delete('/api/homework/:id', requireUser, async (req, res, next) => {
 
 app.post('/api/assignments', requireUser, async (req, res, next) => {
   try {
-    if (req.user.role !== 'teacher' && req.user.role !== 'admin') {
+    if (!isStaff(req.user.role)) {
       return res.status(403).json({ error: 'Only teachers can create assignments' })
     }
     const input = req.body ?? {}
@@ -630,7 +976,7 @@ app.post('/api/assignments', requireUser, async (req, res, next) => {
       return res.status(400).json({ error: 'Enter an assignment name.' })
     }
     const className =
-      String(input.className ?? req.user.class_name ?? '').trim() || 'SSS 2'
+      String(input.className ?? req.user.class_name ?? '').trim() || DEFAULT_CLASS
     const status = input.status === 'draft' ? 'draft' : 'published'
     const postedAt = nowIso().slice(0, 10)
     const dueDate = String(input.due_date ?? postedAt)
@@ -682,9 +1028,36 @@ app.post('/api/assignments', requireUser, async (req, res, next) => {
               created,
             ],
           )
+          const parentRows = await query(
+            "SELECT id FROM users WHERE role = 'parent' AND child_id = ?",
+            [student.id],
+          )
+          for (const parent of parentRows) {
+            await tx.execute(
+              `INSERT INTO notifications (id, user_id, type, title, body, created_at, read)
+               VALUES (?, ?, 'assignment', ?, ?, ?, 0)`,
+              [
+                `n-${crypto.randomUUID()}`,
+                parent.id,
+                `New assignment: ${title}`,
+                `${student.name} has a new ${input.subject || 'class'} task.`,
+                created,
+              ],
+            )
+          }
         }
       }
     })
+    if (status === 'published') {
+      await emailParentsAboutAssignment({
+        students,
+        title,
+        subject: String(input.subject ?? 'Mathematics'),
+        dueDate,
+        teacherName: req.user.name,
+        className,
+      })
+    }
     res.json(await bootstrap(req.user))
   } catch (error) {
     next(error)
@@ -693,7 +1066,7 @@ app.post('/api/assignments', requireUser, async (req, res, next) => {
 
 app.patch('/api/assignments/:id', requireUser, async (req, res, next) => {
   try {
-    if (req.user.role === 'student') {
+    if (!isStaff(req.user.role)) {
       return res.status(403).json({ error: 'Only teachers can edit assignments' })
     }
     const existing = await queryOne('SELECT * FROM assignments WHERE id = ?', [req.params.id])
@@ -730,11 +1103,20 @@ app.patch('/api/assignments/:id', requireUser, async (req, res, next) => {
 
 app.delete('/api/assignments/:id', requireUser, async (req, res, next) => {
   try {
-    if (req.user.role === 'student') {
+    if (!isStaff(req.user.role)) {
       return res.status(403).json({ error: 'Only teachers can delete assignments' })
     }
-    await execute('DELETE FROM submissions WHERE assignment_id = ?', [req.params.id])
-    await execute('DELETE FROM assignments WHERE id = ?', [req.params.id])
+    const assignment = await queryOne('SELECT id FROM assignments WHERE id = ?', [req.params.id])
+    if (assignment) {
+      await execute('DELETE FROM submissions WHERE assignment_id = ?', [req.params.id])
+      await execute('DELETE FROM assignments WHERE id = ?', [req.params.id])
+      return res.json(await bootstrap(req.user))
+    }
+    const homework = await queryOne('SELECT id FROM homework WHERE id = ?', [req.params.id])
+    if (!homework) {
+      return res.status(404).json({ error: 'Assignment not found.' })
+    }
+    await execute('DELETE FROM homework WHERE id = ?', [req.params.id])
     res.json(await bootstrap(req.user))
   } catch (error) {
     next(error)
@@ -743,6 +1125,11 @@ app.delete('/api/assignments/:id', requireUser, async (req, res, next) => {
 
 app.post('/api/homework/:id/toggle-status', requireUser, async (req, res, next) => {
   try {
+    if (req.user.role === 'parent') {
+      return res.status(403).json({
+        error: 'Parents can view assignments but cannot submit work.',
+      })
+    }
     const existing = await queryOne('SELECT * FROM homework WHERE id = ?', [req.params.id])
     if (!existing) return res.status(404).json({ error: 'Homework not found' })
     const nextStatus = existing.status === 'completed' ? 'pending' : 'completed'
@@ -753,20 +1140,80 @@ app.post('/api/homework/:id/toggle-status', requireUser, async (req, res, next) 
   }
 })
 
+app.post('/api/report-cards', requireUser, async (req, res, next) => {
+  try {
+    if (!isStaff(req.user.role)) {
+      return res.status(403).json({ error: 'Only teachers can create report cards.' })
+    }
+    const studentId = String(req.body?.student_id ?? '').trim()
+    const term = String(req.body?.term ?? '').trim()
+    const results = parseReportResults(req.body?.results)
+    if (!studentId || !term) {
+      return res.status(400).json({ error: 'Pick a student and a term.' })
+    }
+    if (results.length === 0) {
+      return res.status(400).json({ error: 'Add at least one subject score.' })
+    }
+    const student = await queryOne("SELECT * FROM users WHERE id = ? AND role = 'student'", [studentId])
+    if (!student) return res.status(404).json({ error: 'Student not found.' })
+    const existing = await queryOne(
+      'SELECT id FROM report_cards WHERE student_id = ? AND term = ?',
+      [studentId, term],
+    )
+    const published = Boolean(req.body?.published)
+    await saveReportCardRecord({
+      id: existing?.id,
+      student,
+      term,
+      results,
+      teacherRemark: String(req.body?.teacher_remark ?? '').trim(),
+      published,
+    })
+    if (published) {
+      await notifyReportPublished(student.id, student.name, term)
+    }
+    res.json(await bootstrap(req.user))
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.patch('/api/report-cards/:id', requireUser, async (req, res, next) => {
   try {
-    if (req.user.role === 'student') {
+    if (!isStaff(req.user.role)) {
       return res.status(403).json({ error: 'Only teachers can edit report cards' })
     }
-    const existing = await getReportCard(req.params.id)
+    const existing = await queryOne('SELECT * FROM report_cards WHERE id = ?', [req.params.id])
     if (!existing) return res.status(404).json({ error: 'Report card not found' })
-    const remark = req.body?.teacher_remark
-    if (typeof remark === 'string') {
-      await execute(
-        'UPDATE report_cards SET teacher_remark = ?, updated_at = ? WHERE id = ?',
-        [remark, nowIso(), req.params.id],
-      )
+    const student = await queryOne('SELECT * FROM users WHERE id = ?', [existing.student_id])
+    if (!student) return res.status(404).json({ error: 'Student not found.' })
+    const results = Array.isArray(req.body?.results)
+      ? parseReportResults(req.body.results)
+      : (await query(
+          'SELECT subject, score, grade, remark FROM report_card_results WHERE report_card_id = ?',
+          [existing.id],
+        )).map((row) => ({
+          subject: row.subject,
+          score: Number(row.score),
+          grade: row.grade,
+          remark: row.remark,
+        }))
+    if (results.length === 0) {
+      return res.status(400).json({ error: 'Add at least one subject score.' })
     }
+    const published =
+      typeof req.body?.published === 'boolean' ? req.body.published : Boolean(Number(existing.published))
+    await saveReportCardRecord({
+      id: existing.id,
+      student,
+      term: String(req.body?.term ?? existing.term).trim() || existing.term,
+      results,
+      teacherRemark:
+        typeof req.body?.teacher_remark === 'string'
+          ? req.body.teacher_remark.trim()
+          : existing.teacher_remark,
+      published,
+    })
     res.json(await bootstrap(req.user))
   } catch (error) {
     next(error)
@@ -775,15 +1222,19 @@ app.patch('/api/report-cards/:id', requireUser, async (req, res, next) => {
 
 app.post('/api/report-cards/:id/toggle-published', requireUser, async (req, res, next) => {
   try {
-    if (req.user.role === 'student') {
+    if (!isStaff(req.user.role)) {
       return res.status(403).json({ error: 'Only teachers can publish report cards' })
     }
     const existing = await queryOne('SELECT * FROM report_cards WHERE id = ?', [req.params.id])
     if (!existing) return res.status(404).json({ error: 'Report card not found' })
+    const nextPublished = Number(existing.published) ? 0 : 1
     await execute(
       'UPDATE report_cards SET published = ?, updated_at = ? WHERE id = ?',
-      [Number(existing.published) ? 0 : 1, nowIso(), req.params.id],
+      [nextPublished, nowIso(), req.params.id],
     )
+    if (nextPublished) {
+      await notifyReportPublished(existing.student_id, existing.student_name, existing.term)
+    }
     res.json(await bootstrap(req.user))
   } catch (error) {
     next(error)
@@ -813,7 +1264,7 @@ app.post('/api/notifications/read-all', requireUser, async (req, res, next) => {
 
 app.post('/api/announcements', requireUser, async (req, res, next) => {
   try {
-    if (req.user.role === 'student') {
+    if (!isStaff(req.user.role)) {
       return res.status(403).json({ error: 'Only teachers can send announcements' })
     }
     const title = String(req.body?.title ?? '').trim()
@@ -835,6 +1286,9 @@ app.post('/api/conversations/:id/messages', requireUser, async (req, res, next) 
     if (!body) return res.status(400).json({ error: 'Message body is required' })
     const conv = await queryOne('SELECT * FROM conversations WHERE id = ?', [req.params.id])
     if (!conv) return res.status(404).json({ error: 'Conversation not found' })
+    if (req.user.role === 'parent' && conv.student_id !== req.user.id) {
+      return res.status(403).json({ error: 'You can only message teachers for your child\'s class.' })
+    }
     const created = nowIso()
     await execute(
       `INSERT INTO messages (id, conversation_id, sender_id, sender_role, body, created_at)
@@ -897,6 +1351,110 @@ app.post('/api/games/:gameId/favorite', requireUser, async (req, res, next) => {
          favorite = CASE WHEN game_scores.favorite = 1 THEN 0 ELSE 1 END`,
       [req.user.id, req.params.gameId],
     )
+    res.json(await bootstrap(req.user))
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/exams', requireUser, async (req, res, next) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only school admins can publish the timetable.' })
+    }
+    const title = String(req.body?.title ?? '').trim()
+    const subject = String(req.body?.subject ?? '').trim()
+    const date = String(req.body?.date ?? '').trim()
+    if (!title || !subject || !date) {
+      return res.status(400).json({ error: 'Enter a title, subject, and date.' })
+    }
+    const kind = req.body?.kind === 'exam' ? 'exam' : 'class'
+    const startTime = String(req.body?.start_time ?? '09:00').trim() || '09:00'
+    const endTime = String(req.body?.end_time ?? '11:00').trim() || '11:00'
+    const duration = String(req.body?.duration ?? '2h').trim() || '2h'
+    const room = String(req.body?.room ?? '').trim()
+    const className = String(req.body?.className ?? DEFAULT_CLASS).trim() || DEFAULT_CLASS
+    const id = String(req.body?.id ?? '').trim() || `ex-${crypto.randomUUID()}`
+    const existing = await queryOne('SELECT id FROM exams WHERE id = ?', [id])
+    if (existing) {
+      await execute(
+        `UPDATE exams SET
+          title = ?, subject = ?, date = ?, start_time = ?, end_time = ?,
+          duration = ?, room = ?, class_name = ?, kind = ?, published = 1
+         WHERE id = ?`,
+        [title, subject, date, startTime, endTime, duration, room, className, kind, id],
+      )
+    } else {
+      await execute(
+        `INSERT INTO exams (
+          id, title, subject, date, start_time, end_time, duration, room, class_name, kind, published
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+        [id, title, subject, date, startTime, endTime, duration, room, className, kind],
+      )
+    }
+    res.json(await bootstrap(req.user))
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.delete('/api/exams/:id', requireUser, async (req, res, next) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only school admins can change the timetable.' })
+    }
+    await execute('DELETE FROM exams WHERE id = ?', [req.params.id])
+    res.json(await bootstrap(req.user))
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/events', requireUser, async (req, res, next) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only school admins can add school events.' })
+    }
+    const title = String(req.body?.title ?? '').trim()
+    const date = String(req.body?.date ?? '').trim()
+    if (!title || !date) {
+      return res.status(400).json({ error: 'Enter a title and date.' })
+    }
+    const id = String(req.body?.id ?? '').trim() || `ev-${crypto.randomUUID()}`
+    const startTime = String(req.body?.start_time ?? '09:00').trim() || '09:00'
+    const endTime = String(req.body?.end_time ?? '12:00').trim() || '12:00'
+    const location = String(req.body?.location ?? 'School').trim() || 'School'
+    const description = String(req.body?.description ?? '').trim()
+    const organizer = String(req.body?.organizer ?? req.user.name).trim() || req.user.name
+    const existing = await queryOne('SELECT id FROM events WHERE id = ?', [id])
+    if (existing) {
+      await execute(
+        `UPDATE events SET
+          title = ?, date = ?, start_time = ?, end_time = ?,
+          location = ?, description = ?, organizer = ?, published = 1
+         WHERE id = ?`,
+        [title, date, startTime, endTime, location, description, organizer, id],
+      )
+    } else {
+      await execute(
+        `INSERT INTO events (
+          id, title, date, start_time, end_time, location, description, organizer, published
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+        [id, title, date, startTime, endTime, location, description, organizer],
+      )
+    }
+    res.json(await bootstrap(req.user))
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.delete('/api/events/:id', requireUser, async (req, res, next) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only school admins can change school events.' })
+    }
+    await execute('DELETE FROM events WHERE id = ?', [req.params.id])
     res.json(await bootstrap(req.user))
   } catch (error) {
     next(error)

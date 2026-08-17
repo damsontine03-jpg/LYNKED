@@ -6,7 +6,11 @@ import { BrandLogo } from '@/components/brand-logo'
 import { buttonVariants } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
-export function SiteHeader() {
+export function SiteHeader({
+  className,
+}: {
+  className?: string
+}) {
   const [scrolled, setScrolled] = useState(false)
 
   useEffect(() => {
@@ -21,6 +25,7 @@ export function SiteHeader() {
       className={cn(
         'sticky top-0 z-30 border-b border-transparent bg-white/80 backdrop-blur-md transition-all duration-300',
         scrolled && 'border-border/70 shadow-[0_8px_30px_rgba(30,80,50,0.08)]',
+        className,
       )}
     >
       <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-2 px-4 py-2 sm:gap-4 sm:px-6 sm:py-3">
@@ -32,10 +37,10 @@ export function SiteHeader() {
           />
         </Link>
 
-        <div className="flex shrink-0 items-center gap-2 sm:gap-4">
+        <div className="flex shrink-0 items-center gap-2.5 sm:gap-4">
           <Link
             href="/about"
-            className="nav-link hidden text-sm font-medium text-foreground/80 hover:text-foreground sm:inline"
+            className="nav-link text-sm font-medium text-foreground/80 hover:text-foreground"
           >
             About
           </Link>
@@ -47,7 +52,7 @@ export function SiteHeader() {
           </Link>
           <Link
             href="/login?mode=signup"
-            className={cn(buttonVariants(), 'uppercase')}
+            className={cn(buttonVariants({ size: 'sm' }), 'uppercase sm:h-10 sm:px-5 sm:text-sm')}
           >
             Sign up
           </Link>

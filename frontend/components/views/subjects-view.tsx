@@ -6,19 +6,20 @@ import { Card } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ClassSelect } from '@/components/ui/class-select'
 import { Select } from '@/components/ui/select'
 import { useAppStore } from '@/lib/app-store'
-import { CLASS_OPTIONS, SUBJECT_OPTIONS, subjectAccent } from '@/lib/ui-helpers'
+import { CLASS_OPTIONS, DEFAULT_CLASS, SUBJECT_OPTIONS, subjectAccent } from '@/lib/ui-helpers'
 import type { User } from '@/lib/types'
 
 export function SubjectsView({ user }: { user: User }) {
-  const { subjects, teachers, addSubject } = useAppStore()
+  const { subjects, teachers, addSubject, deleteSubject } = useAppStore()
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('Biology')
   const [customName, setCustomName] = useState('')
   const [code, setCode] = useState('BIO')
   const [className, setClassName] = useState(
-    user.classNames?.[0] || user.className || 'SSS 2',
+    user.classNames?.[0] || user.className || DEFAULT_CLASS,
   )
   const [teacherId, setTeacherId] = useState(teachers[0]?.id ?? user.id)
 
@@ -53,7 +54,7 @@ export function SubjectsView({ user }: { user: User }) {
           <h1 className="text-2xl font-semibold tracking-tight">Subjects</h1>
           <p className="text-sm text-muted-foreground">
             {user.role === 'teacher'
-              ? 'Subjects you teach. Add another subject at any time.'
+              ? 'Subjects you teach. Add one you take, or remove one added by mistake.'
               : 'Link subjects to classes and teachers.'}
           </p>
         </div>
@@ -78,6 +79,18 @@ export function SubjectsView({ user }: { user: User }) {
                 <p className="pl-2 text-xs text-muted-foreground">
                   {s.code} · {s.className} · {s.teacher_name}
                 </p>
+                {user.role === 'admin' || s.teacher_id === user.id ? (
+                  <div className="pl-2 pt-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => deleteSubject(s.id)}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                ) : null}
               </Card>
             )
           })}
@@ -110,17 +123,12 @@ export function SubjectsView({ user }: { user: User }) {
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="s-class">Class</Label>
-            <Select
+            <ClassSelect
               id="s-class"
+              names={classChoices}
               value={className}
               onChange={(e) => setClassName(e.target.value)}
-            >
-              {classChoices.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </Select>
+            />
           </div>
           {user.role === 'admin' ? (
             <div className="flex flex-col gap-1.5">

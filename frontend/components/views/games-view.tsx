@@ -49,7 +49,7 @@ export function GamesView({ user: _user }: { user: User }) {
       <div>
         <h1 className="text-2xl font-bold uppercase tracking-tight">Games</h1>
         <p className="text-sm text-muted-foreground">
-          A short break between lessons. Scores stay here. They never affect grades.
+          A short break between lessons.
         </p>
       </div>
 

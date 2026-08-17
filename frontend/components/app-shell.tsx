@@ -32,11 +32,19 @@ export function AppShell({ user }: { user: User }) {
       'profile',
       'events',
       'exams',
-      user.role === 'student' || user.role === 'teacher' ? 'assignments' : null,
-      user.role === 'student' ? 'grades' : null,
-      user.role === 'student' ? 'chat' : null,
+      user.role === 'student' || user.role === 'teacher' || user.role === 'parent'
+        ? 'assignments'
+        : null,
+      user.role === 'student' || user.role === 'teacher' || user.role === 'parent'
+        ? 'grades'
+        : null,
+      user.role === 'student' || user.role === 'teacher' || user.role === 'parent'
+        ? 'chat'
+        : null,
       user.role === 'student' ? 'games' : null,
-      user.role === 'student' ? 'reportcards' : null,
+      user.role === 'student' || user.role === 'teacher' || user.role === 'parent'
+        ? 'reportcards'
+        : null,
       user.role === 'teacher' ? 'classes' : null,
       user.role === 'teacher' ? 'submissions' : null,
       user.role === 'teacher' ? 'grades' : null,
@@ -47,6 +55,7 @@ export function AppShell({ user }: { user: User }) {
       user.role === 'admin' ? 'classes' : null,
       user.role === 'admin' ? 'students' : null,
       user.role === 'admin' ? 'teachers' : null,
+      user.role === 'admin' ? 'parents' : null,
       user.role === 'admin' ? 'subjects' : null,
       user.role === 'admin' ? 'announcements' : null,
       user.role === 'admin' ? 'settings' : null,
@@ -82,6 +91,9 @@ export function AppShell({ user }: { user: User }) {
           {activeView === 'teachers' ? (
             <PeopleView user={user} kind="teachers" />
           ) : null}
+          {activeView === 'parents' ? (
+            <PeopleView user={user} kind="parents" />
+          ) : null}
           {activeView === 'subjects' ? <SubjectsView user={user} /> : null}
           {activeView === 'chat' ? <ChatView user={user} /> : null}
           {activeView === 'events' ? <EventsView user={user} /> : null}
@@ -98,7 +110,7 @@ export function AppShell({ user }: { user: User }) {
         </div>
       </main>
 
-      {user.role !== 'admin' ? <FloatingChat user={user} /> : null}
+      <FloatingChat user={user} />
     </div>
   )
 }

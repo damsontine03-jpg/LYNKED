@@ -1,7 +1,7 @@
 // Domain types for the school learning platform.
 // Shaped to map onto Supabase tables later (auth, storage, RLS).
 
-export type Role = 'student' | 'teacher' | 'admin'
+export type Role = 'student' | 'teacher' | 'admin' | 'parent'
 
 export type Status = 'pending' | 'completed'
 
@@ -30,11 +30,16 @@ export interface User {
   email: string
   phone?: string
   role: Role
-  /** Primary class the user belongs to / teaches, e.g. "SSS 2". */
+  /** Primary class the user belongs to / teaches, e.g. "Class 1" or "SSS 1 Science". */
   className: string
   classNames?: string[]
   subject?: string
   subjects?: string[]
+  childId?: string
+  childEmail?: string
+  childName?: string
+  childPublicId?: string
+  publicId?: string
 }
 
 export interface SchoolClass {
@@ -213,6 +218,7 @@ export interface Exam {
   room: string
   className: string
   published: boolean
+  kind: 'class' | 'exam'
 }
 
 export interface Announcement {
