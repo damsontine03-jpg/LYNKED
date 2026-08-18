@@ -27,15 +27,15 @@ CREATE TABLE IF NOT EXISTS homework (
   due_date TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending', 'completed')),
   assigned_by TEXT NOT NULL,
-  teacher_id TEXT NOT NULL REFERENCES users(id),
-  student_id TEXT NOT NULL REFERENCES users(id),
+  teacher_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   priority TEXT CHECK (priority IN ('low', 'medium', 'high')),
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS report_cards (
   id TEXT PRIMARY KEY,
-  student_id TEXT NOT NULL REFERENCES users(id),
+  student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   student_name TEXT NOT NULL,
   class_name TEXT NOT NULL,
   term TEXT NOT NULL,
@@ -74,23 +74,23 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
-  teacher_id TEXT NOT NULL REFERENCES users(id),
-  student_id TEXT NOT NULL REFERENCES users(id),
+  teacher_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   UNIQUE (teacher_id, student_id)
 );
 
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
-  conversation_id TEXT NOT NULL REFERENCES conversations(id),
-  sender_id TEXT NOT NULL REFERENCES users(id),
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  sender_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   sender_role TEXT NOT NULL CHECK (sender_role IN ('student', 'teacher', 'admin', 'parent')),
   body TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS conversation_reads (
-  user_id TEXT NOT NULL REFERENCES users(id),
-  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
   read_at TEXT NOT NULL,
   PRIMARY KEY (user_id, conversation_id)
 );
@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS classes (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   level TEXT NOT NULL,
-  teacher_id TEXT NOT NULL REFERENCES users(id),
+  teacher_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   teacher_name TEXT NOT NULL,
   student_count INTEGER NOT NULL DEFAULT 0
 );
@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS subjects (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   code TEXT NOT NULL,
-  teacher_id TEXT NOT NULL REFERENCES users(id),
+  teacher_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   teacher_name TEXT NOT NULL,
   class_name TEXT NOT NULL
 );
@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS assignments (
   posted_at TEXT NOT NULL,
   due_date TEXT NOT NULL,
   max_marks INTEGER NOT NULL,
-  teacher_id TEXT NOT NULL REFERENCES users(id),
+  teacher_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   teacher_name TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('draft', 'published'))
 );
@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS assignments (
 CREATE TABLE IF NOT EXISTS submissions (
   id TEXT PRIMARY KEY,
   assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
-  student_id TEXT NOT NULL REFERENCES users(id),
+  student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   student_name TEXT NOT NULL,
   file_name TEXT,
   file_size TEXT,
@@ -190,7 +190,7 @@ CREATE TABLE IF NOT EXISTS announcements (
 );
 
 CREATE TABLE IF NOT EXISTS game_scores (
-  user_id TEXT NOT NULL REFERENCES users(id),
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   game_id TEXT NOT NULL,
   high_score INTEGER NOT NULL DEFAULT 0,
   last_played TEXT,

@@ -15,15 +15,19 @@ import { api } from '@/lib/api'
 import { useAppStore } from '@/lib/app-store'
 import type { Role, User } from '@/lib/types'
 
-type Mode = 'login' | 'signup'
+type Mode = 'login' | 'signup' | 'forgot'
 type Step = 'details' | 'code'
+
+function modeFromSearch(value: string | null): Mode {
+  if (value === 'signup') return 'signup'
+  if (value === 'forgot') return 'forgot'
+  return 'login'
+}
 
 export function AuthScreen() {
   const { setSession } = useAppStore()
   const searchParams = useSearchParams()
-  const [mode, setMode] = useState<Mode>(
-    searchParams.get('mode') === 'signup' ? 'signup' : 'login',
-  )
+  const [mode, setMode] = useState<Mode>(() => modeFromSearch(searchParams.get('mode')))
   const [step, setStep] = useState<Step>('details')
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -136,14 +140,18 @@ export function AuthScreen() {
           <h1 className="text-center text-lg font-bold uppercase tracking-wide sm:text-xl md:text-2xl">
             {step === 'code'
               ? 'Check your email'
-              : mode === 'login'
-                ? 'Welcome back'
-                : 'Create account'}
+              : mode === 'signup'
+                ? 'Create account'
+                : mode === 'forgot'
+                  ? 'Forgot password'
+                  : 'Welcome back'}
           </h1>
           <p className="max-w-prose px-1 text-center text-xs text-muted-foreground sm:text-sm">
             {step === 'code'
               ? `Enter the 6 digit code sent to ${email}`
-              : 'Sign in or sign up with an email code. No password needed.'}
+              : mode === 'forgot'
+                ? 'LynkED signs you in with an email code, not a password. Enter your email and we will send a code so you can get back in.'
+                : 'Sign in or sign up with an email code. No password needed.'}
           </p>
         </div>
 
@@ -226,24 +234,34 @@ export function AuthScreen() {
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
             <Button type="submit" size="lg" className="mt-1 min-h-11 w-full uppercase" disabled={busy}>
-              {busy ? 'Sending…' : 'Send code'}
+              {busy ? 'Sending…' : mode === 'forgot' ? 'Send reset code' : 'Send code'}
             </Button>
             {mode === 'login' ? (
-              <button
-                type="button"
-                className="min-h-11 text-sm text-primary"
-                disabled={busy}
-                onClick={() => {
-                  if (!email.trim()) {
-                    setError('Enter your email address.')
-                    return
-                  }
-                  setError('')
-                  setStep('code')
-                }}
-              >
-                I already have a code
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="min-h-11 text-sm text-primary"
+                  disabled={busy}
+                  onClick={() => switchMode('forgot')}
+                >
+                  Forgot password?
+                </button>
+                <button
+                  type="button"
+                  className="min-h-11 text-sm text-primary"
+                  disabled={busy}
+                  onClick={() => {
+                    if (!email.trim()) {
+                      setError('Enter your email address.')
+                      return
+                    }
+                    setError('')
+                    setStep('code')
+                  }}
+                >
+                  I already have a code
+                </button>
+              </>
             ) : null}
           </form>
         ) : (
@@ -268,7 +286,7 @@ export function AuthScreen() {
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
             <Button type="submit" size="lg" className="min-h-11 w-full uppercase" disabled={busy}>
-              {busy ? 'Checking…' : mode === 'login' ? 'Log In' : 'Create account'}
+              {busy ? 'Checking…' : mode === 'signup' ? 'Create account' : 'Log In'}
             </Button>
 
             <button
@@ -294,18 +312,7 @@ export function AuthScreen() {
         )}
 
         <p className="mt-4 text-center text-sm text-muted-foreground sm:mt-6">
-          {mode === 'login' ? (
-            <>
-              Don&apos;t have an account?{' '}
-              <button
-                type="button"
-                className="inline-flex min-h-11 items-center font-semibold text-primary"
-                onClick={() => switchMode('signup')}
-              >
-                Sign Up
-              </button>
-            </>
-          ) : (
+          {mode === 'signup' ? (
             <>
               Already have an account?{' '}
               <button
@@ -314,6 +321,28 @@ export function AuthScreen() {
                 onClick={() => switchMode('login')}
               >
                 Log in
+              </button>
+            </>
+          ) : mode === 'forgot' ? (
+            <>
+              Remembered your account?{' '}
+              <button
+                type="button"
+                className="inline-flex min-h-11 items-center font-semibold text-primary"
+                onClick={() => switchMode('login')}
+              >
+                Log in
+              </button>
+            </>
+          ) : (
+            <>
+              Don&apos;t have an account?{' '}
+              <button
+                type="button"
+                className="inline-flex min-h-11 items-center font-semibold text-primary"
+                onClick={() => switchMode('signup')}
+              >
+                Sign Up
               </button>
             </>
           )}
