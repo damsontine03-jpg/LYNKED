@@ -45,7 +45,6 @@ import type {
   Submission,
   User,
 } from './types'
-import { isOverdue } from './date-utils'
 import { api, getStoredToken, storeToken } from './api'
 import { showToast } from './toast'
 
@@ -555,29 +554,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (homeworkId) {
         void runMutation(`/api/homework/${homeworkId}/toggle-status`, {
           method: 'POST',
-        }).catch(() => {})
+        }).catch(() => showToast('Could not update the homework', 'error'))
         return
       }
-      setSubmissions((prev) =>
-        prev.map((s) => {
-          if (s.id !== id) return s
-          if (s.status === 'not_submitted') {
-            return {
-              ...s,
-              status: 'submitted',
-              submitted_at: new Date().toISOString(),
-              file: s.file ?? { name: 'submission.pdf', sizeLabel: 'None' },
-            }
-          }
-          return {
-            ...s,
-            status: 'not_submitted',
-            submitted_at: undefined,
-            score: undefined,
-            feedback: undefined,
-            graded_at: undefined,
-          }
-        }),
+      void runMutation(`/api/submissions/${id}/toggle`, { method: 'POST' }).catch(() =>
+        showToast('Could not update the submission', 'error'),
       )
     },
     [homeworkIdFor, runMutation],
@@ -587,75 +568,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
     (assignmentId: string, fileName: string, comment?: string) => {
       if (!currentUser || currentUser.role === 'parent') return
       if (homeworkRows.some((h) => h.id === assignmentId)) {
-        void runMutation(`/api/homework/${assignmentId}/toggle-status`, {
-          method: 'POST',
-        }).catch(() => {})
+        toastMutation(
+          runMutation(`/api/homework/${assignmentId}/toggle-status`, {
+            method: 'POST',
+          }),
+          'Assignment submitted',
+          'Could not submit the assignment',
+        )
         return
       }
-      const assignment = assignments.find((a) => a.id === assignmentId)
-      const late = assignment ? isOverdue(assignment.due_date) : false
-      setSubmissions((prev) =>
-        prev.map((s) =>
-          s.assignment_id === assignmentId && s.student_id === currentUser.id
-            ? {
-                ...s,
-                status: late ? 'late' : 'submitted',
-                file: { name: fileName, sizeLabel: 'None' },
-                comment: comment?.trim() || undefined,
-                submitted_at: new Date().toISOString(),
-                score: undefined,
-                feedback: undefined,
-                graded_at: undefined,
-              }
-            : s,
-        ),
+      toastMutation(
+        runMutation(`/api/assignments/${assignmentId}/submit`, {
+          method: 'POST',
+          body: JSON.stringify({ fileName, comment }),
+        }),
+        'Assignment submitted',
+        'Could not submit the assignment',
       )
-      if (assignment) {
-        setNotifications((prev) => [
-          {
-            id: `n-${crypto.randomUUID()}`,
-            user_id: assignment.teacher_id,
-            type: 'submission',
-            title: 'New submission',
-            body: `${currentUser.name} submitted ${assignment.title}.`,
-            created_at: new Date().toISOString(),
-            read: false,
-          },
-          ...prev,
-        ])
-      }
     },
-    [currentUser, assignments, homeworkRows, runMutation],
+    [currentUser, homeworkRows, runMutation, toastMutation],
   )
 
   const gradeSubmission = useCallback(
     (id: string, score: number, feedback: string) => {
-      const now = new Date().toISOString()
-      let target: Submission | undefined
-      setSubmissions((prev) =>
-        prev.map((s) => {
-          if (s.id !== id) return s
-          target = s
-          return { ...s, status: 'graded', score, feedback: feedback.trim(), graded_at: now }
+      toastMutation(
+        runMutation(`/api/submissions/${id}/grade`, {
+          method: 'POST',
+          body: JSON.stringify({ score, feedback }),
         }),
+        'Grade saved',
+        'Could not save the grade',
       )
-      if (target) {
-        const assignment = assignments.find((a) => a.id === target!.assignment_id)
-        setNotifications((prev) => [
-          {
-            id: `n-${crypto.randomUUID()}`,
-            user_id: target!.student_id,
-            type: 'grade',
-            title: 'Grade posted',
-            body: `${assignment?.title ?? 'Assignment'} scored ${score}/${assignment?.max_marks ?? '?'}. Feedback is ready.`,
-            created_at: now,
-            read: false,
-          },
-          ...prev,
-        ])
-      }
     },
-    [assignments],
+    [runMutation, toastMutation],
   )
 
   const visibleReportCards = useMemo(() => {

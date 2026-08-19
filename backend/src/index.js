@@ -18,6 +18,7 @@ import {
   withTransaction,
   DEFAULT_CLASS,
   classLevel,
+  classMatches,
   nextPublicId,
   findStudentByPublicId,
 } from './db.js'
@@ -58,6 +59,13 @@ function hashToken(token) {
 
 function nowIso() {
   return new Date().toISOString()
+}
+
+function isDueDateOverdue(isoDate) {
+  const due = new Date(`${String(isoDate).slice(0, 10)}T00:00:00`)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return due.getTime() < today.getTime()
 }
 
 function normalizeEmail(value) {
@@ -1117,6 +1125,154 @@ app.delete('/api/assignments/:id', requireUser, async (req, res, next) => {
       return res.status(404).json({ error: 'Assignment not found.' })
     }
     await execute('DELETE FROM homework WHERE id = ?', [req.params.id])
+    res.json(await bootstrap(req.user))
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/assignments/:id/submit', requireUser, async (req, res, next) => {
+  try {
+    if (req.user.role === 'parent') {
+      return res.status(403).json({ error: 'Parents can view assignments but cannot submit work.' })
+    }
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ error: 'Only students can submit assignments.' })
+    }
+    const assignment = await queryOne('SELECT * FROM assignments WHERE id = ?', [req.params.id])
+    if (!assignment) return res.status(404).json({ error: 'Assignment not found.' })
+    if (assignment.status !== 'published') {
+      return res.status(400).json({ error: 'This assignment is not open for submission.' })
+    }
+    if (
+      assignment.class_name &&
+      req.user.class_name &&
+      !classMatches(req.user.class_name, assignment.class_name)
+    ) {
+      return res.status(403).json({ error: 'This assignment is for another class.' })
+    }
+    const fileName = String(req.body?.fileName ?? '').trim() || 'submission.pdf'
+    const comment = String(req.body?.comment ?? '').trim() || null
+    const submittedAt = nowIso()
+    const status = isDueDateOverdue(assignment.due_date) ? 'late' : 'submitted'
+    const existing = await queryOne(
+      'SELECT * FROM submissions WHERE assignment_id = ? AND student_id = ?',
+      [assignment.id, req.user.id],
+    )
+    if (existing) {
+      await execute(
+        `UPDATE submissions SET
+          file_name = ?, file_size = ?, comment = ?, submitted_at = ?,
+          status = ?, score = NULL, feedback = NULL, graded_at = NULL
+         WHERE id = ?`,
+        [fileName, 'None', comment, submittedAt, status, existing.id],
+      )
+    } else {
+      await execute(
+        `INSERT INTO submissions (
+          id, assignment_id, student_id, student_name, file_name, file_size,
+          comment, submitted_at, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          `sub-${crypto.randomUUID()}`,
+          assignment.id,
+          req.user.id,
+          req.user.name,
+          fileName,
+          'None',
+          comment,
+          submittedAt,
+          status,
+        ],
+      )
+    }
+    await execute(
+      `INSERT INTO notifications (id, user_id, type, title, body, created_at, read)
+       VALUES (?, ?, 'submission', ?, ?, ?, 0)`,
+      [
+        `n-${crypto.randomUUID()}`,
+        assignment.teacher_id,
+        'New submission',
+        `${req.user.name} submitted ${assignment.title}.`,
+        submittedAt,
+      ],
+    )
+    res.json(await bootstrap(req.user))
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/submissions/:id/grade', requireUser, async (req, res, next) => {
+  try {
+    if (!isStaff(req.user.role)) {
+      return res.status(403).json({ error: 'Only teachers can grade submissions.' })
+    }
+    const existing = await queryOne('SELECT * FROM submissions WHERE id = ?', [req.params.id])
+    if (!existing) return res.status(404).json({ error: 'Submission not found.' })
+    const assignment = await queryOne('SELECT * FROM assignments WHERE id = ?', [
+      existing.assignment_id,
+    ])
+    if (!assignment) return res.status(404).json({ error: 'Assignment not found.' })
+    const score = Number(req.body?.score)
+    if (!Number.isFinite(score)) {
+      return res.status(400).json({ error: 'Enter a score.' })
+    }
+    const maxMarks = Number(assignment.max_marks) || 20
+    const clamped = Math.max(0, Math.min(maxMarks, Math.round(score)))
+    const feedback = String(req.body?.feedback ?? '').trim()
+    const gradedAt = nowIso()
+    await execute(
+      `UPDATE submissions SET status = 'graded', score = ?, feedback = ?, graded_at = ?
+       WHERE id = ?`,
+      [clamped, feedback || null, gradedAt, existing.id],
+    )
+    await execute(
+      `INSERT INTO notifications (id, user_id, type, title, body, created_at, read)
+       VALUES (?, ?, 'grade', ?, ?, ?, 0)`,
+      [
+        `n-${crypto.randomUUID()}`,
+        existing.student_id,
+        'Grade posted',
+        `${assignment.title} scored ${clamped}/${maxMarks}. Feedback is ready.`,
+        gradedAt,
+      ],
+    )
+    res.json(await bootstrap(req.user))
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/submissions/:id/toggle', requireUser, async (req, res, next) => {
+  try {
+    if (req.user.role === 'parent') {
+      return res.status(403).json({ error: 'Parents can view assignments but cannot submit work.' })
+    }
+    const existing = await queryOne('SELECT * FROM submissions WHERE id = ?', [req.params.id])
+    if (!existing) return res.status(404).json({ error: 'Submission not found.' })
+    if (req.user.role === 'student' && existing.student_id !== req.user.id) {
+      return res.status(403).json({ error: 'You can only submit your own work.' })
+    }
+    if (existing.status === 'not_submitted') {
+      const assignment = await queryOne('SELECT * FROM assignments WHERE id = ?', [
+        existing.assignment_id,
+      ])
+      const status = assignment && isDueDateOverdue(assignment.due_date) ? 'late' : 'submitted'
+      await execute(
+        `UPDATE submissions SET
+          status = ?, submitted_at = ?, file_name = COALESCE(file_name, ?), file_size = COALESCE(file_size, ?)
+         WHERE id = ?`,
+        [status, nowIso(), 'submission.pdf', 'None', existing.id],
+      )
+    } else {
+      await execute(
+        `UPDATE submissions SET
+          status = 'not_submitted', submitted_at = NULL, score = NULL, feedback = NULL, graded_at = NULL
+         WHERE id = ?`,
+        [existing.id],
+      )
+    }
     res.json(await bootstrap(req.user))
   } catch (error) {
     next(error)

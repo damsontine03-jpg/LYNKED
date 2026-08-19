@@ -16,7 +16,6 @@ import { useAppStore } from '@/lib/app-store'
 import { formatDueDate, formatShortDate } from '@/lib/date-utils'
 import { CLASS_OPTIONS, DEFAULT_CLASS, SUBJECT_OPTIONS } from '@/lib/ui-helpers'
 import { canCreateAssignments, canSubmitAssignments, viewerStudentId } from '@/lib/roles'
-import { showToast } from '@/lib/toast'
 import type { Assignment, AssignmentInput, Submission, User } from '@/lib/types'
 
 export function AssignmentsView({ user }: { user: User }) {
@@ -98,7 +97,6 @@ export function AssignmentsView({ user }: { user: User }) {
     setSubmittedToast(true)
     setFileName('')
     setComment('')
-    showToast('Assignment submitted')
   }
 
   return (
